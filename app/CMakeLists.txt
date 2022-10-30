@@ -109,6 +109,12 @@ add_subdirectory("libraries/sirit")
 # libadrenotools
 add_subdirectory("libraries/adrenotools")
 
+# Tessil Robin Map
+add_subdirectory("libraries/robin-map")
+
+# Renderdoc in-app API
+include_directories("libraries/renderdoc")
+
 # Build Skyline with full debugging data and -Og for debug builds
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g3 -glldb -gdwarf-5 -fno-omit-frame-pointer")
 # Build Skyline with full debugging data and some optimizations for reldebug builds, build speed is pioritised
@@ -142,6 +148,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/common/exception.cpp
         ${source_DIR}/skyline/common/logger.cpp
         ${source_DIR}/skyline/common/signal.cpp
+        ${source_DIR}/skyline/common/spin_lock.cpp
         ${source_DIR}/skyline/common/uuid.cpp
         ${source_DIR}/skyline/common/trace.cpp
         ${source_DIR}/skyline/nce/guest.S
@@ -179,6 +186,17 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/gpu/cache/renderpass_cache.cpp
         ${source_DIR}/skyline/gpu/cache/framebuffer_cache.cpp
         ${source_DIR}/skyline/gpu/interconnect/fermi_2d.cpp
+        ${source_DIR}/skyline/gpu/interconnect/maxwell_dma.cpp
+        ${source_DIR}/skyline/gpu/interconnect/inline2memory.cpp
+        ${source_DIR}/skyline/gpu/interconnect/maxwell_3d/common.cpp
+        ${source_DIR}/skyline/gpu/interconnect/maxwell_3d/active_state.cpp
+        ${source_DIR}/skyline/gpu/interconnect/maxwell_3d/pipeline_state.cpp
+        ${source_DIR}/skyline/gpu/interconnect/maxwell_3d/packed_pipeline_state.cpp
+        ${source_DIR}/skyline/gpu/interconnect/maxwell_3d/pipeline_manager.cpp
+        ${source_DIR}/skyline/gpu/interconnect/maxwell_3d/constant_buffers.cpp
+        ${source_DIR}/skyline/gpu/interconnect/maxwell_3d/samplers.cpp
+        ${source_DIR}/skyline/gpu/interconnect/maxwell_3d/textures.cpp
+        ${source_DIR}/skyline/gpu/interconnect/maxwell_3d/maxwell_3d.cpp
         ${source_DIR}/skyline/gpu/interconnect/command_executor.cpp
         ${source_DIR}/skyline/gpu/interconnect/command_nodes.cpp
         ${source_DIR}/skyline/gpu/interconnect/conversion/quads.cpp
@@ -192,6 +210,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/soc/gm20b/channel.cpp
         ${source_DIR}/skyline/soc/gm20b/gpfifo.cpp
         ${source_DIR}/skyline/soc/gm20b/gmmu.cpp
+        ${source_DIR}/skyline/soc/gm20b/macro/macro_state.cpp
         ${source_DIR}/skyline/soc/gm20b/macro/macro_interpreter.cpp
         ${source_DIR}/skyline/soc/gm20b/engines/engine.cpp
         ${source_DIR}/skyline/soc/gm20b/engines/gpfifo.cpp
@@ -321,6 +340,8 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/pctl/IParentalControlService.cpp
         ${source_DIR}/skyline/services/lm/ILogService.cpp
         ${source_DIR}/skyline/services/lm/ILogger.cpp
+        ${source_DIR}/skyline/services/ldn/IUserServiceCreator.cpp
+        ${source_DIR}/skyline/services/ldn/IUserLocalCommunicationService.cpp
         ${source_DIR}/skyline/services/account/IAccountServiceForApplication.cpp
         ${source_DIR}/skyline/services/account/IManagerForApplication.cpp
         ${source_DIR}/skyline/services/account/IProfile.cpp
@@ -349,4 +370,4 @@ target_include_directories(skyline PRIVATE ${source_DIR}/skyline)
 target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-extensions -Wno-c++17-extensions -Wno-c99-designator -Wno-reorder -Wno-missing-braces -Wno-unused-variable -Wno-unused-private-field -Wno-dangling-else -Wconversion -fsigned-bitfields)
 
 target_link_libraries(skyline PRIVATE shader_recompiler)
-target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode oboe vkma mbedcrypto opus Boost::intrusive Boost::container range-v3 adrenotools)
+target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode oboe vkma mbedcrypto opus Boost::intrusive Boost::container range-v3 adrenotools tsl::robin_map)

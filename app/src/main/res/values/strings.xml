@@ -70,6 +70,11 @@
     <string name="respect_display_cutout">Respect Display Cutout</string>
     <string name="respect_display_cutout_enabled">Do not draw UI elements in the cutout area</string>
     <string name="respect_display_cutout_disabled">Allow UI elements to be drawn in the cutout area</string>
+    <string name="executor_slot_count">Executor Slot Count</string>
+    <string name="executor_slot_count_desc">Maximum number of simultaneous GPU executions (Higher may sometimes perform better but will use more RAM)</string>
+    <string name="enable_texture_readback_hack">Enable Texture Readback Hack</string>
+    <string name="enable_texture_readback_hack_enabled">Texture readback hack is enabled (Will break some games but others will have higher performance)</string>
+    <string name="enable_texture_readback_hack_disabled">Texture readback hack is disabled (Ensures highest accuracy)</string>
     <!-- Settings - Debug -->
     <string name="debug">Debug</string>
     <string name="validation_layer">Enable validation layer</string>
@@ -184,8 +189,8 @@
     <string name="ktstd_description">Kotlin Standard Library provides convenience functions in Kotlin</string>
     <string name="dagger_description">Dagger provides a framework for compile-time dependency injection</string>
     <string name="mtico_description">Material Design Icons provides consistent iconography throughout the application</string>
-    <string name="noto_sans_description">Noto Sans is used as our FOSS shared font replacement for Latin, Japanese, Korean and (Traditional) Chinese</string>
-    <string name="roboto_description">Roboto is used as our FOSS shared font replacement for Nintendo\'s extended character set</string>
+    <string name="noto_sans_description">Noto Sans is used as our FOSS shared font replacement for Latin, Japanese and (Traditional) Chinese</string>
+    <string name="roboto_description">Roboto is used as our FOSS shared font replacement for Korean and Nintendo\'s extended character set</string>
     <!-- Software Keyboard -->
     <string name="input_hint">Input Text</string>
     <!-- Misc -->
