@@ -6,16 +6,30 @@
 #include <common.h>
 
 namespace skyline::soc::host1x {
-    /**
-     * @brief The NVDEC Host1x class implements hardware accelerated video decoding for the VP9/VP8/H264/VC1 codecs
-     */
-    class NvDecClass {
-      private:
-        std::function<void()> opDoneCallback;
+    namespace Host1x {
 
-      public:
-        NvDecClass(std::function<void()> opDoneCallback);
+class Host1x;
 
-        void CallMethod(u32 method, u32 argument);
-    };
-}
+class Nvdec {
+public:
+    explicit Nvdec(Host1x& host1x);
+    ~Nvdec();
+
+    /// Writes the method into the state, Invoke Execute() if encountered
+    void ProcessMethod(u32 method, u32 argument);
+
+    /// Return most recently decoded frame
+    [[nodiscard]] AVFramePtr GetFrame();
+
+private:
+    /// Invoke codec to decode a frame
+    void Execute();
+
+    Host1x& host1x;
+    NvdecCommon::NvdecRegisters state;
+    std::unique_ptr<Codec> codec;
+};
+
+} // namespace Host1x
+
+} // namespace Tegra
