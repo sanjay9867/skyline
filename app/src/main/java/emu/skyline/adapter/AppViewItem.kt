@@ -44,7 +44,9 @@ interface LayoutBinding<V : ViewBinding> : ViewBinding {
 
     val textTitle : TextView
 
-    val textSubtitle : TextView
+    val textVersion : TextView
+
+    val textAuthor : TextView
 
     val icon : ImageView
 }
@@ -54,7 +56,9 @@ class ListBinding(parent : ViewGroup) : LayoutBinding<AppItemLinearBinding> {
 
     override val textTitle = binding.textTitle
 
-    override val textSubtitle = binding.textSubtitle
+    override val textVersion = binding.textVersion
+
+    override val textAuthor = binding.textAuthor
 
     override val icon = binding.icon
 }
@@ -64,7 +68,9 @@ class GridBinding(parent : ViewGroup) : LayoutBinding<AppItemGridBinding> {
 
     override val textTitle = binding.textTitle
 
-    override val textSubtitle = binding.textSubtitle
+    override val textVersion = binding.textVersion
+
+    override val textAuthor = binding.textAuthor
 
     override val icon = binding.icon
 }
@@ -74,30 +80,41 @@ class GridCompatBinding(parent : ViewGroup) : LayoutBinding<AppItemGridCompactBi
 
     override val textTitle = binding.textTitle
 
-    override val textSubtitle = binding.textSubtitle
+    override val textVersion = binding.textVersion
+
+    override val textAuthor = binding.textAuthor
 
     override val icon = binding.icon
 }
 
 private typealias InteractionFunction = (appItem : AppItem) -> Unit
 
-class AppViewItem(var layoutType : LayoutType, private val item : AppItem, private val missingIcon : Bitmap, private val onClick : InteractionFunction, private val onLongClick : InteractionFunction) : GenericListItem<LayoutBinding<*>>() {
+class AppViewItem(var layoutType : LayoutType, private val item : AppItem, private val onClick : InteractionFunction, private val onLongClick : InteractionFunction) : GenericListItem<LayoutBinding<*>>() {
     override fun getViewBindingFactory() = LayoutBindingFactory(layoutType)
 
-    override fun bind(binding : LayoutBinding<*>, position : Int) {
+    override fun bind(holder : GenericViewHolder<LayoutBinding<*>>, position : Int) {
+        val binding = holder.binding
         binding.textTitle.text = item.title
-        binding.textSubtitle.text = item.subTitle ?: item.loaderResultString(binding.root.context)
+        binding.textVersion.text = item.version ?: item.loaderResultString(binding.root.context)
+        binding.textAuthor.text = item.author
+        // Make text views selected for marquee to work
+        binding.textTitle.isSelected = true
+        binding.textVersion.isSelected = true
+        binding.textAuthor.isSelected = true
 
-        binding.icon.setImageBitmap(item.icon ?: missingIcon)
+        binding.icon.setImageBitmap(item.bitmapIcon)
 
         if (layoutType == LayoutType.List) {
             binding.icon.setOnClickListener { showIconDialog(it.context, item) }
         }
 
-        binding.root.findViewById<View>(R.id.item_click_layout).apply {
-            setOnClickListener { onClick.invoke(item) }
-            setOnLongClickListener { true.also { onLongClick.invoke(item) } }
+        val handleClicks = { view : View ->
+            view.setOnClickListener { onClick.invoke(item) }
+            view.setOnLongClickListener { true.also { onLongClick.invoke(item) } }
         }
+
+        handleClicks(binding.root.findViewById(R.id.item_click_layout))
+        binding.root.findViewById<View>(R.id.item_card)?.let { handleClicks(it) }
     }
 
     private fun showIconDialog(context : Context, appItem : AppItem) {
@@ -106,7 +123,7 @@ class AppViewItem(var layoutType : LayoutType, private val item : AppItem, priva
         builder.window!!.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
 
         val imageView = ImageView(context)
-        imageView.setImageBitmap(appItem.icon ?: missingIcon)
+        imageView.setImageBitmap(appItem.bitmapIcon)
 
         builder.addContentView(imageView, RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         builder.show()

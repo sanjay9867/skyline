@@ -28,7 +28,7 @@ import emu.skyline.R as sR
  * @see androidx.preference.ListPreference
  */
 @SuppressLint("RestrictedApi")
-class IntegerListPreference @JvmOverloads constructor(
+open class IntegerListPreference @JvmOverloads constructor(
     context : Context,
     attrs : AttributeSet? = null,
     defStyleAttr : Int = TypedArrayUtils.getAttr(
@@ -142,7 +142,7 @@ class IntegerListPreference @JvmOverloads constructor(
             getPersistedInt(0)
     }
 
-    override fun onSaveInstanceState() : Parcelable {
+    override fun onSaveInstanceState() : Parcelable? {
         val superState = super.onSaveInstanceState()
         if (isPersistent)
             // No need to save instance state since it's persistent
@@ -199,7 +199,7 @@ class IntegerListPreference @JvmOverloads constructor(
         }
     }
 
-    class IntegerListPreferenceDialogFragmentCompat : PreferenceDialogFragmentCompat() {
+    open class IntegerListPreferenceDialogFragmentCompat : PreferenceDialogFragmentCompat() {
         var clickedDialogEntryIndex = 0
         private var entries : Array<CharSequence>? = null
         private var entryValues : IntArray? = null
@@ -259,9 +259,9 @@ class IntegerListPreference @JvmOverloads constructor(
         }
 
         companion object {
-            private const val SAVE_STATE_INDEX = "ListPreferenceDialogFragment.index"
-            private const val SAVE_STATE_ENTRIES = "ListPreferenceDialogFragment.entries"
-            private const val SAVE_STATE_ENTRY_VALUES = "ListPreferenceDialogFragment.entryValues"
+            private const val SAVE_STATE_INDEX = "IntegerListPreferenceDialogFragment.index"
+            private const val SAVE_STATE_ENTRIES = "IntegerListPreferenceDialogFragment.entries"
+            private const val SAVE_STATE_ENTRY_VALUES = "IntegerListPreferenceDialogFragment.entryValues"
 
             fun newInstance(key : String?) : IntegerListPreferenceDialogFragmentCompat {
                 val fragment = IntegerListPreferenceDialogFragmentCompat()

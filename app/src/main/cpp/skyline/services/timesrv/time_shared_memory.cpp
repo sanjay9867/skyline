@@ -59,7 +59,7 @@ namespace skyline::service::timesrv::core {
 
     TimeSharedMemory::TimeSharedMemory(const DeviceState &state)
         : kTimeSharedMemory(std::make_shared<kernel::type::KSharedMemory>(state, TimeSharedMemorySize)),
-          timeSharedMemory(reinterpret_cast<TimeSharedMemoryLayout *>(kTimeSharedMemory->host.ptr)) {}
+          timeSharedMemory(reinterpret_cast<TimeSharedMemoryLayout *>(kTimeSharedMemory->host.data())) {}
 
     void TimeSharedMemory::SetupStandardSteadyClock(UUID rtcId, TimeSpanType baseTimePoint) {
         SteadyClockTimePoint context{
@@ -99,14 +99,14 @@ namespace skyline::service::timesrv::core {
     }
 
     void SystemClockContextUpdateCallback::SignalOperationEvent() {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock{mutex};
 
         for (const auto &event : operationEvents)
             event->Signal();
     }
 
     void SystemClockContextUpdateCallback::AddOperationEvent(const std::shared_ptr<kernel::type::KEvent> &event) {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock{mutex};
 
         operationEvents.push_back(event);
     }

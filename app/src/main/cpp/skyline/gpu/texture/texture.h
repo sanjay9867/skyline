@@ -3,10 +3,23 @@
 
 #pragma once
 
+#include <range/v3/view.hpp>
+#include <range/v3/algorithm.hpp>
+#include <common/spin_lock.h>
+#include <common/lockable_shared_ptr.h>
+#include <nce.h>
+#include <gpu/tag_allocator.h>
 #include <gpu/memory_manager.h>
+#include <gpu/usage_tracker.h>
 
 namespace skyline::gpu {
     namespace texture {
+        enum class RenderPassUsage : u8 {
+            None,
+            Sampled,
+            RenderTarget
+        };
+
         struct Dimensions {
             u32 width;
             u32 height;
@@ -25,15 +38,6 @@ namespace skyline::gpu {
             constexpr Dimensions(vk::Extent3D extent) : Dimensions(extent.width, extent.height, extent.depth) {}
 
             auto operator<=>(const Dimensions &) const = default;
-
-            constexpr vk::ImageType GetType() const {
-                if (depth > 1)
-                    return vk::ImageType::e3D;
-                else if (height > 1)
-                    return vk::ImageType::e2D;
-                else
-                    return vk::ImageType::e1D;
-            }
 
             constexpr operator vk::Extent2D() const {
                 return vk::Extent2D{
@@ -58,48 +62,6 @@ namespace skyline::gpu {
             }
         };
 
-        enum class SwizzleChannel : u8 {
-            Zero, //!< Write 0 to the channel
-            One, //!< Write 1 to the channel
-            Red, //!< Red color channel
-            Green, //!< Green color channel
-            Blue, //!< Blue color channel
-            Alpha, //!< Alpha channel
-        };
-
-        struct Swizzle {
-            SwizzleChannel red{SwizzleChannel::Red}; //!< Swizzle for the red channel
-            SwizzleChannel green{SwizzleChannel::Green}; //!< Swizzle for the green channel
-            SwizzleChannel blue{SwizzleChannel::Blue}; //!< Swizzle for the blue channel
-            SwizzleChannel alpha{SwizzleChannel::Alpha}; //!< Swizzle for the alpha channel
-
-            constexpr operator vk::ComponentMapping() {
-                auto swizzleConvert{[](SwizzleChannel channel) {
-                    switch (channel) {
-                        case SwizzleChannel::Zero:
-                            return vk::ComponentSwizzle::eZero;
-                        case SwizzleChannel::One:
-                            return vk::ComponentSwizzle::eOne;
-                        case SwizzleChannel::Red:
-                            return vk::ComponentSwizzle::eR;
-                        case SwizzleChannel::Green:
-                            return vk::ComponentSwizzle::eG;
-                        case SwizzleChannel::Blue:
-                            return vk::ComponentSwizzle::eB;
-                        case SwizzleChannel::Alpha:
-                            return vk::ComponentSwizzle::eA;
-                    }
-                }};
-
-                return vk::ComponentMapping{
-                    .r = swizzleConvert(red),
-                    .g = swizzleConvert(green),
-                    .b = swizzleConvert(blue),
-                    .a = swizzleConvert(alpha),
-                };
-            }
-        };
-
         /**
          * @note Blocks refers to the atomic unit of a compressed format (IE: The minimum amount of data that can be decompressed)
          */
@@ -107,9 +69,15 @@ namespace skyline::gpu {
             u8 bpb{}; //!< Bytes Per Block, this is used instead of bytes per pixel as that might not be a whole number for compressed formats
             vk::Format vkFormat{vk::Format::eUndefined};
             vk::ImageAspectFlags vkAspect{vk::ImageAspectFlagBits::eColor};
-            Swizzle swizzle{};
             u16 blockHeight{1}; //!< The height of a block in pixels
             u16 blockWidth{1}; //!< The width of a block in pixels
+            vk::ComponentMapping swizzleMapping{
+                .r = vk::ComponentSwizzle::eR,
+                .g = vk::ComponentSwizzle::eG,
+                .b = vk::ComponentSwizzle::eB,
+                .a = vk::ComponentSwizzle::eA
+            };
+            bool stencilFirst{}; //!< If the stencil channel is the first channel in the format
 
             constexpr bool IsCompressed() const {
                 return (blockHeight != 1) || (blockWidth != 1);
@@ -122,7 +90,7 @@ namespace skyline::gpu {
              * @return The size of the texture in bytes
              */
             constexpr size_t GetSize(u32 width, u32 height, u32 depth = 1) const {
-                return (((width / blockWidth) * (height / blockHeight)) * bpb) * depth;
+                return util::DivideCeil<size_t>(width, size_t{blockWidth}) * util::DivideCeil<size_t>(height, size_t{blockHeight}) * bpb * depth;
             }
 
             constexpr size_t GetSize(Dimensions dimensions) const {
@@ -152,7 +120,26 @@ namespace skyline::gpu {
              * @return If the supplied format is texel-layout compatible with the current format
              */
             constexpr bool IsCompatible(const FormatBase &other) const {
-                return bpb == other.bpb && blockHeight == other.blockHeight && blockWidth == other.blockWidth;
+                return vkFormat == other.vkFormat
+                    || (vkFormat == vk::Format::eD32Sfloat && other.vkFormat == vk::Format::eR32Sfloat)
+                    || (componentCount(vkFormat) == componentCount(other.vkFormat) &&
+                        ranges::all_of(ranges::views::iota(u8{0}, componentCount(vkFormat)), [this, other](auto i) {
+                            return componentBits(vkFormat, i) == componentBits(other.vkFormat, i);
+                        }) && (vkAspect & other.vkAspect) != vk::ImageAspectFlags{});
+            }
+
+            /**
+             * @brief Determines the image aspect to use based off of the format and the first swizzle component
+             */
+            constexpr vk::ImageAspectFlags Aspect(bool first) const {
+                if (vkAspect & vk::ImageAspectFlagBits::eDepth && vkAspect & vk::ImageAspectFlagBits::eStencil) {
+                    if (first)
+                        return stencilFirst ? vk::ImageAspectFlagBits::eStencil : vk::ImageAspectFlagBits::eDepth;
+                    else
+                        return stencilFirst ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eStencil;
+                } else {
+                    return vkAspect;
+                }
             }
         };
 
@@ -210,7 +197,7 @@ namespace skyline::gpu {
                     u8 blockHeight; //!< The height of the blocks in GOBs
                     u8 blockDepth;  //!< The depth of the blocks in GOBs
                 };
-                u32 pitch; //!< The pitch of the texture if it's pitch linear
+                u32 pitch; //!< The pitch of the texture in bytes
             };
 
             constexpr bool operator==(const TileConfig &other) const {
@@ -230,18 +217,16 @@ namespace skyline::gpu {
         };
 
         /**
-         * @brief The type of a texture to determine the access patterns for it
-         * @note This is effectively the Tegra X1 texture types with the 1DBuffer + 2DNoMipmap removed as those are handled elsewhere
-         * @note We explicitly utilize Vulkan types here as it provides the most efficient conversion while not exposing Vulkan to the outer API
+         * @brief A description of a single mipmapped level of a block-linear surface
          */
-        enum class TextureType {
-            e1D = VK_IMAGE_VIEW_TYPE_1D,
-            e2D = VK_IMAGE_VIEW_TYPE_2D,
-            e3D = VK_IMAGE_VIEW_TYPE_3D,
-            eCube = VK_IMAGE_VIEW_TYPE_CUBE,
-            e1DArray = VK_IMAGE_VIEW_TYPE_1D_ARRAY,
-            e2DArray = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
-            eCubeArray = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY,
+        struct MipLevelLayout {
+            Dimensions dimensions; //!< The dimensions of the mipmapped level, these are exact dimensions and not aligned to a GOB
+            size_t linearSize; //!< The size of a linear image with this mipmapped level in bytes
+            size_t targetLinearSize; //!< The size of a linear image with this mipmapped level in bytes and using the target format, this will only differ from linearSize if the target format is supplied
+            size_t blockLinearSize; //!< The size of a blocklinear image with this mipmapped level in bytes
+            size_t blockHeight, blockDepth; //!< The block height and block depth set for the level
+
+            constexpr MipLevelLayout(Dimensions dimensions, size_t linearSize, size_t targetLinearSize, size_t blockLinearSize, size_t blockHeight, size_t blockDepth) : dimensions{dimensions}, linearSize{linearSize}, targetLinearSize{targetLinearSize}, blockLinearSize{blockLinearSize}, blockHeight{blockHeight}, blockDepth{blockDepth} {}
         };
     }
 
@@ -252,51 +237,91 @@ namespace skyline::gpu {
      * @brief A descriptor for a texture present in guest memory, it can be used to create a corresponding Texture object for usage on the host
      */
     struct GuestTexture {
-        using Mappings = boost::container::small_vector<span < u8>, 3>;
+        using Mappings = boost::container::small_vector<span<u8>, 3>;
 
         Mappings mappings; //!< Spans to CPU memory for the underlying data backing this texture
         texture::Dimensions dimensions{};
         texture::Format format{};
         texture::TileConfig tileConfig{};
-        texture::TextureType type{};
-        u16 baseArrayLayer{};
-        u16 layerCount{};
-        u32 layerStride{}; //!< An optional hint regarding the size of a single layer, it will be set to 0 when not available
+        vk::ImageViewType viewType{};
+        u32 baseArrayLayer{};
+        u32 layerCount{1};
+        u32 layerStride{}; //!< An optional hint regarding the size of a single layer, it **should** be set to 0 when not available and should never be a non-0 value that doesn't reflect the correct layer stride
+        u32 mipLevelCount{1}; //!< The total amount of mip levels in the parent image, if one exists
+        u32 viewMipBase{}; //!< The minimum mip level of the view, this is the smallest mip level that can be accessed via this view
+        u32 viewMipCount{1}; //!< The amount of mip levels starting from the base that can be accessed via this view
+        vk::ComponentMapping swizzle{}; //!< Component swizzle derived from format requirements and the guest supplied swizzle
+        vk::ImageAspectFlags aspect{};
 
         GuestTexture() {}
 
-        GuestTexture(Mappings mappings, texture::Dimensions dimensions, texture::Format format, texture::TileConfig tileConfig, texture::TextureType type, u16 baseArrayLayer = 0, u16 layerCount = 1, u32 layerStride = 0)
+        GuestTexture(Mappings mappings, texture::Dimensions dimensions, texture::Format format, texture::TileConfig tileConfig, vk::ImageViewType viewType, u32 baseArrayLayer = 0, u32 layerCount = 1, u32 layerStride = 0, u32 mipLevelCount = 1, u32 viewMipBase = 0, u32 viewMipCount = 1)
             : mappings(mappings),
               dimensions(dimensions),
               format(format),
               tileConfig(tileConfig),
-              type(type),
+              viewType(viewType),
               baseArrayLayer(baseArrayLayer),
               layerCount(layerCount),
-              layerStride(layerStride) {}
+              layerStride(layerStride),
+              mipLevelCount(mipLevelCount),
+              viewMipBase(viewMipBase),
+              viewMipCount(viewMipCount),
+              aspect(format->vkAspect) {}
 
-        GuestTexture(span <u8> mapping, texture::Dimensions dimensions, texture::Format format, texture::TileConfig tileConfig, texture::TextureType type, u16 baseArrayLayer = 0, u16 layerCount = 1, u32 layerStride = 0)
+        GuestTexture(span<u8> mapping, texture::Dimensions dimensions, texture::Format format, texture::TileConfig tileConfig, vk::ImageViewType viewType, u32 baseArrayLayer = 0, u32 layerCount = 1, u32 layerStride = 0, u32 mipLevelCount = 1, u32 viewMipBase = 0, u32 viewMipCount = 1)
             : mappings(1, mapping),
               dimensions(dimensions),
               format(format),
               tileConfig(tileConfig),
-              type(type),
+              viewType(viewType),
               baseArrayLayer(baseArrayLayer),
               layerCount(layerCount),
-              layerStride(layerStride) {}
+              layerStride(layerStride),
+              mipLevelCount(mipLevelCount),
+              viewMipBase(viewMipBase),
+              viewMipCount(viewMipCount),
+              aspect(format->vkAspect) {}
+
+        /**
+         * @note This should be used over accessing the `layerStride` member directly when desiring the actual layer stride for calculations as it will automatically handle it not being filled in
+         * @note Requires `dimensions`, `format` and `tileConfig` to be filled in
+         * @return The size of a single layer with layout alignment in bytes
+         */
+        u32 GetLayerStride();
+
+        /**
+         * @brief Calculates the size of a single layer in bytes, unlike `GetLayerStride` the returned layer size is always calculated and may not be equal to the actual layer stride
+         */
+        u32 CalculateLayerSize() const;
+
+        /**
+         * @return The most appropriate backing image type for this texture
+         */
+        vk::ImageType GetImageType() const;
+
+        u32 GetViewLayerCount() const;
+
+        u32 GetViewDepth() const;
+
+        size_t GetSize();
+
+        bool MappingsValid() const;
     };
 
     class TextureManager;
 
     /**
      * @brief A view into a specific subresource of a Texture
+     * @note The object **must** be locked prior to accessing any members as values will be mutated
+     * @note This class conforms to the Lockable and BasicLockable C++ named requirements
      */
-    class TextureView {
+    class TextureView : public std::enable_shared_from_this<TextureView> {
       private:
-        vk::raii::ImageView *view{};
+        vk::ImageView vkView{};
 
       public:
-        std::shared_ptr<Texture> backing;
+        LockableSharedPtr<Texture> texture;
         vk::ImageViewType type;
         texture::Format format;
         vk::ComponentMapping mapping;
@@ -305,15 +330,42 @@ namespace skyline::gpu {
         /**
          * @param format A compatible format for the texture view (Defaults to the format of the backing texture)
          */
-        TextureView(std::shared_ptr<Texture> backing, vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format = {}, vk::ComponentMapping mapping = {});
+        TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format = {}, vk::ComponentMapping mapping = {});
 
         /**
-         * @return A Vulkan Image View that corresponds to the properties of this view
+         * @brief Acquires an exclusive lock on the backing texture for the calling thread
+         * @note Naming is in accordance to the BasicLockable named requirement
+         */
+        void lock();
+
+        /**
+         * @brief Acquires an exclusive lock on the texture for the calling thread
+         * @param tag A tag to associate with the lock, future invocations with the same tag prior to the unlock will acquire the lock without waiting (0 is not a valid tag value and will disable tag behavior)
+         * @return If the lock was acquired by this call rather than having the same tag as the holder
+         * @note All locks using the same tag **must** be from the same thread as it'll only have one corresponding unlock() call
+         */
+        bool LockWithTag(ContextTag tag);
+
+        /**
+         * @brief Relinquishes an existing lock on the backing texture by the calling thread
+         * @note Naming is in accordance to the BasicLockable named requirement
+         */
+        void unlock();
+
+        /**
+         * @brief Attempts to acquire an exclusive lock on the backing texture but returns immediately if it's captured by another thread
+         * @note Naming is in accordance to the Lockable named requirement
+         */
+        bool try_lock();
+
+        /**
+         * @return A VkImageView that corresponds to the properties of this view
+         * @note The texture **must** be locked prior to calling this
          */
         vk::ImageView GetView();
 
         bool operator==(const TextureView &rhs) {
-            return backing == rhs.backing && type == rhs.type && format == rhs.format && mapping == rhs.mapping && range == rhs.range;
+            return texture == rhs.texture && type == rhs.type && format == rhs.format && mapping == rhs.mapping && range == rhs.range;
         }
     };
 
@@ -321,24 +373,62 @@ namespace skyline::gpu {
      * @brief A texture which is backed by host constructs while being synchronized with the underlying guest texture
      * @note This class conforms to the Lockable and BasicLockable C++ named requirements
      */
-    class Texture : public std::enable_shared_from_this<Texture>, public FenceCycleDependency {
+    class Texture : public std::enable_shared_from_this<Texture> {
       private:
         GPU &gpu;
-        std::mutex mutex; //!< Synchronizes any mutations to the texture or its backing
-        std::condition_variable backingCondition; //!< Signalled when a valid backing has been swapped in
+        RecursiveSpinLock mutex; //!< Synchronizes any mutations to the texture or its backing
+        std::atomic<ContextTag> tag{}; //!< The tag associated with the last lock call
+        std::condition_variable_any backingCondition; //!< Signalled when a valid backing has been swapped in
         using BackingType = std::variant<vk::Image, vk::raii::Image, memory::Image>;
         BackingType backing; //!< The Vulkan image that backs this texture, it is nullable
 
-        std::vector<std::pair<vk::ImageViewCreateInfo, vk::raii::ImageView>> views; //!< VkImageView(s) that have been constructed from this Texture, utilized for caching
+        span<u8> mirror{}; //!< A contiguous mirror of all the guest mappings to allow linear access on the CPU
+        span<u8> alignedMirror{}; //!< The mirror mapping aligned to page size to reflect the full mapping
+        std::optional<nce::NCE::TrapHandle> trapHandle{}; //!< The handle of the traps for the guest mappings
+        enum class DirtyState {
+            Clean, //!< The CPU mappings are in sync with the GPU texture
+            CpuDirty, //!< The CPU mappings have been modified but the GPU texture is not up to date
+            GpuDirty, //!< The GPU texture has been modified but the CPU mappings have not been updated
+        } dirtyState{DirtyState::CpuDirty}; //!< The state of the CPU mappings with respect to the GPU texture
+        bool memoryFreed{}; //!< If the guest backing memory has been freed
+        std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
+
+        /**
+         * @brief Storage for all metadata about a specific view into the buffer, used to prevent redundant view creation and duplication of VkBufferView(s)
+         */
+        struct TextureViewStorage {
+            vk::ImageViewType type;
+            texture::Format format;
+            vk::ComponentMapping mapping;
+            vk::ImageSubresourceRange range;
+            vk::raii::ImageView vkView;
+
+            TextureViewStorage(vk::ImageViewType type, texture::Format format, vk::ComponentMapping mapping, vk::ImageSubresourceRange range, vk::raii::ImageView &&vkView);
+        };
+
+        std::vector<TextureViewStorage> views;
+
+        std::shared_ptr<memory::StagingBuffer> downloadStagingBuffer{};
+
+        u32 lastRenderPassIndex{}; //!< The index of the last render pass that used this texture
+        texture::RenderPassUsage lastRenderPassUsage{texture::RenderPassUsage::None}; //!< The type of usage in the last render pass
+        bool everUsedAsRt{}; //!< If this texture has ever been used as a rendertarget
+        vk::PipelineStageFlags pendingStageMask{}; //!< List of pipeline stages that are yet to be flushed for reads since the last time this texture was used an an RT
+        vk::PipelineStageFlags readStageMask{}; //!< Set of pipeline stages that this texture has been read in since it was last used as an RT
 
         friend TextureManager;
         friend TextureView;
 
         /**
+         * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid
+         */
+        void SetupGuestMappings();
+
+        /**
          * @brief An implementation function for guest -> host texture synchronization, it allocates and copies data into a staging buffer or directly into a linear host texture
          * @return If a staging buffer was required for the texture sync, it's returned filled with guest texture data and must be copied to the host texture by the callee
          */
-        std::shared_ptr<memory::StagingBuffer> SynchronizeHostImpl(const std::shared_ptr<FenceCycle> &pCycle);
+        std::shared_ptr<memory::StagingBuffer> SynchronizeHostImpl();
 
         /**
          * @brief Records commands for copying data from a staging buffer to the texture's backing into the supplied command buffer
@@ -358,39 +448,54 @@ namespace skyline::gpu {
         void CopyToGuest(u8 *hostBuffer);
 
         /**
-         * @brief A FenceCycleDependency that copies the contents of a staging buffer or mapped image backing the texture to the guest texture
+         * @brief Frees the guest side copy of the texture
+         * @note `stateMutex` must be locked when calling this function
          */
-        struct TextureBufferCopy : public FenceCycleDependency {
-            std::shared_ptr<Texture> texture;
-            std::shared_ptr<memory::StagingBuffer> stagingBuffer;
+        void FreeGuest();
 
-            TextureBufferCopy(std::shared_ptr<Texture> texture, std::shared_ptr<memory::StagingBuffer> stagingBuffer = {});
+        /**
+         * @return A vector of all the buffer image copies that need to be done for every aspect of every level of every layer of the texture
+         */
+        boost::container::small_vector<vk::BufferImageCopy, 10> GetBufferImageCopies();
 
-            ~TextureBufferCopy();
-        };
+        static constexpr size_t FrequentlyLockedThreshold{2}; //!< Threshold for the number of times a texture can be locked (not from context locks, only normal) before it should be considered frequently locked
+        size_t accumulatedCpuLockCounter{};
+
+        static constexpr size_t SkipReadbackHackWaitCountThreshold{6}; //!< Threshold for the number of times a texture can be waited on before it should be considered for the readback hack
+        static constexpr std::chrono::nanoseconds SkipReadbackHackWaitTimeThreshold{constant::NsInSecond / 4}; //!< Threshold for the amount of time a texture can be waited on before it should be considered for the readback hack, `SkipReadbackHackWaitCountThreshold` needs to be hit before this
+        size_t accumulatedGuestWaitCounter{}; //!< Total number of times the texture has been waited on
+        std::chrono::nanoseconds accumulatedGuestWaitTime{}; //!< Amount of time the texture has been waited on for since the `SkipReadbackHackWaitCountThreshold`th wait on it by the guest
 
       public:
-        std::weak_ptr<FenceCycle> cycle; //!< A fence cycle for when any host operation mutating the texture has completed, it must be waited on prior to any mutations to the backing
+        std::shared_ptr<FenceCycle> cycle; //!< A fence cycle for when any host operation mutating the texture has completed, it must be waited on prior to any mutations to the backing
         std::optional<GuestTexture> guest;
         texture::Dimensions dimensions;
         texture::Format format;
         vk::ImageLayout layout;
         vk::ImageTiling tiling;
-        u32 mipLevels;
-        u32 layerCount; //!< The amount of array layers in the image, utilized for efficient binding (Not to be confused with the depth or faces in a cubemap)
+        vk::ImageCreateFlags flags;
+        vk::ImageUsageFlags usage;
+        u32 layerCount; //!< The amount of array layers in the image
+        size_t deswizzledLayerStride{}; //!< The stride of a single layer given linear tiling using the guest format, this does **not** consider mipmapping
+        size_t layerStride{}; //!< The stride of a single layer given linear tiling, this does **not** consider mipmapping
+        u32 levelCount;
+        std::vector<texture::MipLevelLayout> mipLayouts; //!< The layout of each mip level in the guest texture
+        size_t deswizzledSurfaceSize{}; //!< The size of the guest surface with linear tiling, calculated with the guest format which may differ from the host format
+        size_t surfaceSize{}; //!< The size of the entire surface given linear tiling, this contains all mip levels and layers
         vk::SampleCountFlagBits sampleCount;
-
-        Texture(GPU &gpu, BackingType &&backing, GuestTexture guest, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, u32 mipLevels = 1, u32 layerCount = 1, vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1);
-
-        Texture(GPU &gpu, BackingType &&backing, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, u32 mipLevels = 1, u32 layerCount = 1, vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1);
-
-        Texture(GPU &gpu, GuestTexture guest);
+        bool replaced{};
 
         /**
-         * @brief Creates and allocates memory for the backing to creates a texture object wrapping it
-         * @param usage Usage flags that will applied aside from VK_IMAGE_USAGE_TRANSFER_SRC_BIT/VK_IMAGE_USAGE_TRANSFER_DST_BIT which are mandatory
+         * @brief Creates a texture object wrapping the supplied backing with the supplied attributes
+         * @param layout The initial layout of the texture, it **must** be eUndefined or ePreinitialized
          */
-        Texture(GPU &gpu, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout initialLayout = vk::ImageLayout::eGeneral, vk::ImageUsageFlags usage = {}, vk::ImageTiling tiling = vk::ImageTiling::eOptimal, u32 mipLevels = 1, u32 layerCount = 1, vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1);
+        Texture(GPU &gpu, BackingType &&backing, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, vk::ImageCreateFlags flags, vk::ImageUsageFlags usage, u32 levelCount = 1, u32 layerCount = 1, vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1);
+
+        /**
+         * @brief Creates a texture object wrapping the guest texture with a backing that can represent the guest texture data
+         * @note The guest mappings will not be setup until SetupGuestMappings() is called
+         */
+        Texture(GPU &gpu, GuestTexture guest);
 
         ~Texture();
 
@@ -409,25 +514,27 @@ namespace skyline::gpu {
          * @brief Acquires an exclusive lock on the texture for the calling thread
          * @note Naming is in accordance to the BasicLockable named requirement
          */
-        void lock() {
-            mutex.lock();
-        }
+        void lock();
+
+        /**
+         * @brief Acquires an exclusive lock on the texture for the calling thread
+         * @param tag A tag to associate with the lock, future invocations with the same tag prior to the unlock will acquire the lock without waiting (A default initialised tag will disable this behaviour)
+         * @return If the lock was acquired by this call as opposed to the texture already being locked with the same tag
+         * @note All locks using the same tag **must** be from the same thread as it'll only have one corresponding unlock() call
+         */
+        bool LockWithTag(ContextTag tag);
 
         /**
          * @brief Relinquishes an existing lock on the texture by the calling thread
          * @note Naming is in accordance to the BasicLockable named requirement
          */
-        void unlock() {
-            mutex.unlock();
-        }
+        void unlock();
 
         /**
          * @brief Attempts to acquire an exclusive lock but returns immediately if it's captured by another thread
          * @note Naming is in accordance to the Lockable named requirement
          */
-        bool try_lock() {
-            return mutex.try_lock();
-        }
+        bool try_lock();
 
         /**
          * @brief Waits on the texture backing to be a valid non-null Vulkan image
@@ -455,49 +562,80 @@ namespace skyline::gpu {
         void TransitionLayout(vk::ImageLayout layout);
 
         /**
-         * @brief Converts the texture to have the specified format
+         * @brief Marks the texture as being GPU dirty
          */
-        void SetFormat(texture::Format format);
+        void MarkGpuDirty(UsageTracker &usageTracker);
 
         /**
          * @brief Synchronizes the host texture with the guest after it has been modified
-         * @param commandBuffer An optional command buffer that the command will be recorded into rather than creating one as necessary
-         * @note A command buffer **must** not be submitted if it is created just for the command as it can be more efficient to allocate one within the function as necessary which is done when one isn't passed in
+         * @param gpuDirty If true, the texture will be transitioned to being GpuDirty by this call
+         * @note This function is not blocking and the synchronization will not be complete until the associated fence is signalled, it can be waited on with WaitOnFence()
          * @note The texture **must** be locked prior to calling this
-         * @note The guest texture backing should exist prior to calling this
          */
-        void SynchronizeHost();
+        void SynchronizeHost(bool gpuDirty = false);
 
         /**
          * @brief Same as SynchronizeHost but this records any commands into the supplied command buffer rather than creating one as necessary
+         * @param gpuDirty If true, the texture will be transitioned to being GpuDirty by this call
          * @note It is more efficient to call SynchronizeHost than allocating a command buffer purely for this function as it may conditionally not record any commands
          * @note The texture **must** be locked prior to calling this
-         * @note The guest texture backing should exist prior to calling this
          */
-        void SynchronizeHostWithBuffer(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &cycle);
+        void SynchronizeHostInline(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &cycle, bool gpuDirty = false);
 
         /**
          * @brief Synchronizes the guest texture with the host texture after it has been modified
+         * @param cpuDirty If true, the texture will be transitioned to being CpuDirty by this call
+         * @param skipTrap If true, trapping/untrapping the guest mappings will be skipped and has to be handled by the caller
+         * @note This function is blocking and waiting on the fence is not required
          * @note The texture **must** be locked prior to calling this
-         * @note The guest texture should not be null prior to calling this
          */
-        void SynchronizeGuest();
+        void SynchronizeGuest(bool cpuDirty = false, bool skipTrap = false);
 
         /**
-         * @brief Synchronizes the guest texture with the host texture after it has been modified
-         * @note It is more efficient to call SynchronizeHost than allocating a command buffer purely for this function as it may conditionally not record any commands
-         * @note The texture **must** be locked prior to calling this
-         * @note The guest texture should not be null prior to calling this
+         * @return A cached or newly created view into this texture with the supplied attributes
          */
-        void SynchronizeGuestWithBuffer(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &cycle);
+        std::shared_ptr<TextureView> GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format = {}, vk::ComponentMapping mapping = {});
 
         /**
          * @brief Copies the contents of the supplied source texture into the current texture
          */
-        void CopyFrom(std::shared_ptr<Texture> source, const vk::ImageSubresourceRange &subresource = vk::ImageSubresourceRange{
+        void CopyFrom(std::shared_ptr<Texture> source, vk::Semaphore waitSemaphore, vk::Semaphore signalSemaphore, texture::Format srcFormat, const vk::ImageSubresourceRange &subresource = vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = VK_REMAINING_MIP_LEVELS,
             .layerCount = VK_REMAINING_ARRAY_LAYERS,
         });
+
+        /**
+         * @return If the texture is frequently locked by threads using non-ContextLocks
+         */
+        bool FrequentlyLocked() {
+            return accumulatedCpuLockCounter >= FrequentlyLockedThreshold;
+        }
+
+        /**
+         * @brief Checks if the previous usage in the renderpass is compatible with the current one
+         * @return If the new usage is compatible with the previous usage
+         */
+        bool ValidateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage);
+
+        /**
+         * @brief Updates renderpass usage tracking information
+         */
+        void UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage);
+
+        /**
+         * @return The last usage of the texture
+         */
+        texture::RenderPassUsage GetLastRenderPassUsage();
+
+        /**
+         * @return The set of stages this texture has been read in since it was last used as an RT
+         */
+        vk::PipelineStageFlags GetReadStageMask();
+
+        /**
+         * @brief Populates the input src and dst stage masks with appropriate read barrier parameters for the current texture state
+         */
+        void PopulateReadBarrier(vk::PipelineStageFlagBits dstStage, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask);
     };
 }

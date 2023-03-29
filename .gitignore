@@ -45,8 +45,13 @@ captures/
 .idea/dictionaries
 .idea/libraries
 .idea/jarRepositories.xml
+.idea/misc.xml
+.idea/compiler.xml
+deploymentTargetDropDown.xml
+render.experimental.xml
 # Android Studio 3 in .gitignore file.
 .idea/caches
+.idea/modules
 .idea/modules.xml
 .idea/navEditor.xml
 .idea/runConfigurations.xml
@@ -95,3 +100,12 @@ lint/reports/
 
 # Adreno Validation Layer
 libVkLayer_adreno.so
+
+# Skyline logs
+*.sklog
+
+# Android Studio Profiler Traces
+*.trace
+
+# Output Metadata
+output-metadata.json

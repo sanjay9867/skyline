@@ -14,6 +14,7 @@ namespace skyline::input {
         JoyconDual    = 0b100,
         JoyconLeft    = 0b1000,
         JoyconRight   = 0b10000,
+        Gamecube      = 0b100000,
     };
     // @fmt:on
 
@@ -137,11 +138,24 @@ namespace skyline::input {
     static_assert(sizeof(SixAxisVector) == 0xC);
 
     /**
+     * @brief Indicates if sixaxis sensor is connected or interpolated
+     * @url https://switchbrew.org/wiki/HID_services#SixAxisSensorAttribute
+     */
+    union SixAxisSensorAttribute {
+        u32 raw{};
+        struct {
+            bool isConnected : 1;
+            bool isInterpolated : 1;
+        };
+    };
+    static_assert(sizeof(SixAxisSensorAttribute) == 0x4);
+
+    /**
      * @url https://switchbrew.org/wiki/HID_Shared_Memory#NpadSixAxisSensorHandheldState
      */
     struct NpadSixAxisState {
         u64 globalTimestamp; //!< The global timestamp in samples
-        u64 _unk0_;
+        u64 deltaTimestamp; //!< Time passed since last state
         u64 localTimestamp; //!< The local timestamp in samples
 
         SixAxisVector accelerometer;
@@ -149,7 +163,8 @@ namespace skyline::input {
         SixAxisVector rotation;
         std::array<SixAxisVector, 3> orientation; //!< The orientation basis data as a matrix
 
-        u64 _unk2_; //!< Always 1
+        SixAxisSensorAttribute attribute;
+        u32 _unk1_;
     };
     static_assert(sizeof(NpadSixAxisState) == 0x68);
 
@@ -186,6 +201,26 @@ namespace skyline::input {
         };
     };
     static_assert(sizeof(NpadDeviceType) == 0x4);
+
+    /**
+     * @url https://switchbrew.org/wiki/HID_services#VibrationDeviceType
+     */
+    enum class NpadVibrationDeviceType : u32 {
+        Unknown,
+        LinearResonantActuator, //!< LRAs are used on devices that support HD Rumble functionality such as Joy-Cons and the Pro Controller
+        EccentricRotatingMass, //!< ERMs are mainly used in the old GameCube controllers and offer more crude rumble
+    };
+    static_assert(sizeof(NpadVibrationDeviceType) == 0x4);
+
+    /**
+     * @url https://switchbrew.org/wiki/HID_services#VibrationDevicePosition
+     */
+    enum class NpadVibrationDevicePosition : u32 {
+        None,
+        Left,
+        Right
+    };
+    static_assert(sizeof(NpadVibrationDevicePosition) == 0x4);
 
     /**
      * @url https://switchbrew.org/wiki/HID_Shared_Memory#NpadSystemProperties

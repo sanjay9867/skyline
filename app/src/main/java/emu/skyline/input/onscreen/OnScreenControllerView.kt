@@ -9,8 +9,14 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
+import android.content.Context.VIBRATOR_MANAGER_SERVICE
+import android.content.Context.VIBRATOR_SERVICE
 import android.graphics.Canvas
 import android.graphics.PointF
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -35,6 +41,10 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
         private val controllerTypeMappings = mapOf(*ControllerType.values().map {
             it to (setOf(*it.buttons) to setOf(*it.sticks))
         }.toTypedArray())
+
+        private const val SCALE_STEP = 0.05f
+        private const val ALPHA_STEP = 25
+        private val ALPHA_RANGE = 55..255
     }
 
     private val controls = Controls(this)
@@ -51,6 +61,18 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
             field = value
             controls.joysticks.forEach { it.recenterSticks = recenterSticks }
         }
+    var hapticFeedback = false
+        set(value) {
+            field = value
+            (controls.circularButtons + controls.rectangularButtons + controls.triggerButtons).forEach { it.hapticFeedback = hapticFeedback }
+        }
+    private val vibrator: Vibrator =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (context.getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+        } else {
+            @Suppress("DEPRECATION") (context.getSystemService(VIBRATOR_SERVICE) as Vibrator)
+        }
+    private val effectClick = VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK)
 
     override fun onDraw(canvas : Canvas) {
         super.onDraw(canvas)
@@ -98,6 +120,7 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
                     if (button.config.enabled && button.isTouched(x, y)) {
                         button.touchPointerId = pointerId
                         button.onFingerDown(x, y)
+                        if (hapticFeedback) vibrator.vibrate(effectClick)
                         performClick()
                         onButtonStateChangedListener?.invoke(button.buttonId, ButtonState.Pressed)
                         handled = true
@@ -150,13 +173,13 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
                                 invalidate()
                             }
                             addListener(object : AnimatorListenerAdapter() {
-                                override fun onAnimationCancel(animation : Animator?) {
+                                override fun onAnimationCancel(animation : Animator) {
                                     super.onAnimationCancel(animation)
                                     onAnimationEnd(animation)
                                     onStickStateChangedListener?.invoke(joystick.stickId, PointF(0f, 0f))
                                 }
 
-                                override fun onAnimationEnd(animation : Animator?) {
+                                override fun onAnimationEnd(animation : Animator) {
                                     super.onAnimationEnd(animation)
                                     if (joystick.shortDoubleTapped)
                                         onButtonStateChangedListener?.invoke(joystick.buttonId, ButtonState.Released)
@@ -245,17 +268,36 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
             it.config.enabled = true
         }
         controls.globalScale = 1.15f
+        controls.alpha = 155
         invalidate()
     }
 
     fun increaseScale() {
-        controls.globalScale += 0.05f
+        controls.globalScale += SCALE_STEP
         invalidate()
     }
 
     fun decreaseScale() {
-        controls.globalScale -= 0.05f
+        controls.globalScale -= SCALE_STEP
         invalidate()
+    }
+
+    fun increaseOpacity() {
+        controls.alpha = (controls.alpha + ALPHA_STEP).coerceIn(ALPHA_RANGE)
+        invalidate()
+    }
+
+    fun decreaseOpacity() {
+        controls.alpha = (controls.alpha - ALPHA_STEP).coerceIn(ALPHA_RANGE)
+        invalidate()
+    }
+
+    fun getTextColor() : Int {
+        return controls.globalTextColor
+    }
+
+    fun getBackGroundColor() : Int {
+        return controls.globalBackgroundColor
     }
 
     fun setOnButtonStateChangedListener(listener : OnButtonStateChangedListener) {
@@ -270,6 +312,20 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
 
     fun setButtonEnabled(buttonId : ButtonId, enabled : Boolean) {
         controls.allButtons.first { it.buttonId == buttonId }.config.enabled = enabled
+        invalidate()
+    }
+
+    fun setTextColor(color : Int) {
+        for (button in controls.allButtons) {
+            button.config.textColor = color
+        }
+        invalidate()
+    }
+
+    fun setBackGroundColor(color : Int) {
+        for (button in controls.allButtons) {
+            button.config.backgroundColor = color
+        }
         invalidate()
     }
 }

@@ -25,9 +25,52 @@ namespace skyline::service::hid {
         return {};
     }
 
+    Result IHidServer::ActivateMouse(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
+    Result IHidServer::ActivateKeyboard(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
+    Result IHidServer::StartSixAxisSensor(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
+    Result IHidServer::StopSixAxisSensor(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
+    Result IHidServer::SetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto npadHandle{request.Pop<NpadDeviceHandle>()};
+        auto mode{request.Pop<GyroscopeZeroDriftMode>()};
+
+        state.input->npad[npadHandle.id].gyroZeroDriftMode = mode;
+        return {};
+    }
+
+    Result IHidServer::GetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto npadHandle{request.Pop<NpadDeviceHandle>()};
+
+        response.Push(state.input->npad[npadHandle.id].gyroZeroDriftMode);
+        return {};
+    }
+
+    Result IHidServer::ResetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto npadHandle{request.Pop<NpadDeviceHandle>()};
+
+        state.input->npad[npadHandle.id].gyroZeroDriftMode = GyroscopeZeroDriftMode::Standard;
+        return {};
+    }
+
+    Result IHidServer::IsSixAxisSensorAtRest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(1);
+        return {};
+    }
+
     Result IHidServer::SetSupportedNpadStyleSet(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto styleSet{request.Pop<NpadStyleSet>()};
-        std::lock_guard lock(state.input->npad.mutex);
+        std::scoped_lock lock{state.input->npad.mutex};
         state.input->npad.styles = styleSet;
         state.input->npad.Update();
 
@@ -43,7 +86,7 @@ namespace skyline::service::hid {
 
     Result IHidServer::SetSupportedNpadIdType(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto supportedIds{request.inputBuf.at(0).cast<NpadId>()};
-        std::lock_guard lock(state.input->npad.mutex);
+        std::scoped_lock lock{state.input->npad.mutex};
         state.input->npad.supportedIds.assign(supportedIds.begin(), supportedIds.end());
         state.input->npad.Update();
         return {};
@@ -62,6 +105,8 @@ namespace skyline::service::hid {
     Result IHidServer::AcquireNpadStyleSetUpdateEventHandle(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto id{request.Pop<NpadId>()};
         auto handle{state.process->InsertItem(state.input->npad.at(id).updateEvent)};
+
+        state.input->npad.at(id).updateEvent->Signal();
 
         Logger::Debug("Npad {} Style Set Update Event Handle: 0x{:X}", id, handle);
         response.copyHandles.push_back(handle);
@@ -101,7 +146,7 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::SetNpadJoyHoldType(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::lock_guard lock(state.input->npad.mutex);
+        std::scoped_lock lock{state.input->npad.mutex};
         request.Skip<u64>();
         state.input->npad.orientation = request.Pop<NpadJoyOrientation>();
         state.input->npad.Update();
@@ -115,7 +160,7 @@ namespace skyline::service::hid {
 
     Result IHidServer::SetNpadJoyAssignmentModeSingleByDefault(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto id{request.Pop<NpadId>()};
-        std::lock_guard lock(state.input->npad.mutex);
+        std::scoped_lock lock{state.input->npad.mutex};
         state.input->npad.at(id).SetAssignment(NpadJoyAssignment::Single);
         state.input->npad.Update();
         return {};
@@ -123,7 +168,7 @@ namespace skyline::service::hid {
 
     Result IHidServer::SetNpadJoyAssignmentModeSingle(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto id{request.Pop<NpadId>()};
-        std::lock_guard lock(state.input->npad.mutex);
+        std::scoped_lock lock{state.input->npad.mutex};
         state.input->npad.at(id).SetAssignment(NpadJoyAssignment::Single);
         state.input->npad.Update();
         return {};
@@ -131,14 +176,60 @@ namespace skyline::service::hid {
 
     Result IHidServer::SetNpadJoyAssignmentModeDual(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto id{request.Pop<NpadId>()};
-        std::lock_guard lock(state.input->npad.mutex);
+        std::scoped_lock lock{state.input->npad.mutex};
         state.input->npad.at(id).SetAssignment(NpadJoyAssignment::Dual);
         state.input->npad.Update();
         return {};
     }
 
-    Result IHidServer::CreateActiveVibrationDeviceList(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(IActiveVibrationDeviceList), session, response);
+    Result IHidServer::StartLrAssignmentMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // This isn't really necessary for us due to input preconfiguration so stub it
+        return {};
+    }
+
+    Result IHidServer::StopLrAssignmentMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
+    Result IHidServer::SetNpadHandheldActivationMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        request.Skip<u64>();
+        auto activationMode{request.Pop<NpadHandheldActivationMode>()};
+
+        std::scoped_lock lock{state.input->npad.mutex};
+        state.input->npad.handheldActivationMode = activationMode;
+        return {};
+    }
+
+    Result IHidServer::GetNpadHandheldActivationMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        std::scoped_lock lock{state.input->npad.mutex};
+        response.Push(state.input->npad.handheldActivationMode);
+        return {};
+    }
+
+
+    Result IHidServer::GetVibrationDeviceInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto deviceHandle{request.Pop<NpadDeviceHandle>()};
+        auto id{deviceHandle.id};
+
+        if (id > NpadId::Player8 && id != NpadId::Handheld && id != NpadId::Unknown)
+            return result::InvalidNpadId;
+
+        auto vibrationDeviceType{NpadVibrationDeviceType::Unknown};
+        auto vibrationDevicePosition{NpadVibrationDevicePosition::None};
+
+        if (deviceHandle.GetType() == NpadControllerType::Gamecube)
+            vibrationDeviceType = NpadVibrationDeviceType::EccentricRotatingMass;
+        else
+            vibrationDeviceType = NpadVibrationDeviceType::LinearResonantActuator;
+
+        if (vibrationDeviceType == NpadVibrationDeviceType::LinearResonantActuator)
+            if (deviceHandle.isRight)
+                vibrationDevicePosition = NpadVibrationDevicePosition::Right;
+            else
+                vibrationDevicePosition = NpadVibrationDevicePosition::Left;
+
+        response.Push(NpadVibrationDeviceInfo{vibrationDeviceType, vibrationDevicePosition});
+
         return {};
     }
 
@@ -151,6 +242,11 @@ namespace skyline::service::hid {
             device.VibrateSingle(handle.isRight, value);
         }
 
+        return {};
+    }
+
+    Result IHidServer::CreateActiveVibrationDeviceList(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        manager.RegisterService(SRVREG(IActiveVibrationDeviceList), session, response);
         return {};
     }
 
@@ -177,6 +273,15 @@ namespace skyline::service::hid {
             }
         }
 
+        return {};
+    }
+
+    Result IHidServer::IsVibrationPermitted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result IHidServer::SetPalmaBoostMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         return {};
     }
 }

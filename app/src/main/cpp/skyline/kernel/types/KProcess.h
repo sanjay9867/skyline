@@ -12,7 +12,7 @@
 namespace skyline {
     namespace constant {
         constexpr u16 TlsSlotSize{0x200}; //!< The size of a single TLS slot
-        constexpr u8 TlsSlots{PAGE_SIZE / TlsSlotSize}; //!< The amount of TLS slots in a single page
+        constexpr u8 TlsSlots{constant::PageSize / TlsSlotSize}; //!< The amount of TLS slots in a single page
         constexpr KHandle BaseHandleIndex{0xD000}; //!< The index of the base handle
     }
 
@@ -117,7 +117,7 @@ namespace skyline {
                 std::unique_lock lock(handleMutex);
 
                 std::shared_ptr<objectClass> item;
-                if constexpr (std::is_same<objectClass, KThread>())
+                if constexpr (std::is_same<objectClass, KThread>() || std::is_same<objectClass, KPrivateMemory>())
                     item = std::make_shared<objectClass>(state, constant::BaseHandleIndex + handles.size(), args...);
                 else
                     item = std::make_shared<objectClass>(state, args...);
@@ -210,10 +210,12 @@ namespace skyline {
 
             /**
              * @brief Locks the mutex at the specified address
+             * @param thread The thread that is locking the mutex
              * @param ownerHandle The psuedo-handle of the current mutex owner
              * @param tag The handle of the thread which is requesting this lock
+             * @param failOnOutdated If true, the function will return InvalidCurrentMemory if the supplied ownerHandle is outdated
              */
-            Result MutexLock(u32 *mutex, KHandle ownerHandle, KHandle tag);
+            Result MutexLock(const std::shared_ptr<KThread> &thread, u32 *mutex, KHandle ownerHandle, KHandle tag, bool failOnOutdated = false);
 
             /**
              * @brief Unlocks the mutex at the specified address
@@ -223,22 +225,34 @@ namespace skyline {
             /**
              * @brief Waits on the conditional variable at the specified address
              */
-            Result ConditionalVariableWait(u32 *key, u32 *mutex, KHandle tag, i64 timeout);
+            Result ConditionVariableWait(u32 *key, u32 *mutex, KHandle tag, i64 timeout);
 
             /**
              * @brief Signals the conditional variable at the specified address
              */
-            void ConditionalVariableSignal(u32 *key, i32 amount);
+            void ConditionVariableSignal(u32 *key, i32 amount);
+
+            enum class ArbitrationType : u32 {
+                WaitIfLessThan = 0,
+                DecrementAndWaitIfLessThan = 1,
+                WaitIfEqual = 2,
+            };
 
             /**
-             * @brief Waits on the supplied address with the specified arbitration function
+             * @brief Waits on the supplied address with the specified arbitration type
              */
-            Result WaitForAddress(u32 *address, u32 value, i64 timeout, bool(*arbitrationFunction)(u32 *address, u32 value));
+            Result WaitForAddress(u32 *address, u32 value, i64 timeout, ArbitrationType type);
+
+            enum class SignalType : u32 {
+                Signal = 0,
+                SignalAndIncrementIfEqual = 1,
+                SignalAndModifyBasedOnWaitingThreadCountIfEqual = 2,
+            };
 
             /**
-             * @brief Signals a variable amount of waiters at the supplied address
+             * @brief Signals a variable for amount of waiters at the supplied address with the specified signal type
              */
-            Result SignalToAddress(u32 *address, u32 value, i32 amount, bool(*mutateFunction)(u32 *address, u32 value, u32 waiterCount) = nullptr);
+            Result SignalToAddress(u32 *address, u32 value, i32 amount, SignalType type);
         };
     }
 }

@@ -7,6 +7,39 @@
 #include "shared_mem.h"
 
 namespace skyline::input {
+
+    /**
+     * @brief Motion sensor location
+     */
+    enum class MotionId {
+        Left,
+        Right,
+        Console,
+    };
+
+    /**
+     * @brief A description of a motion event
+     * @note This structure corresponds to MotionSensorInput, see that for details
+     */
+    struct MotionSensorState {
+        u64 timestamp;
+        u64 deltaTimestamp;
+        std::array<float,3> gyroscope;
+        std::array<float,3> accelerometer;
+        std::array<float,4> quaternion;
+        std::array<float,9> orientationMatrix;
+    };
+    static_assert(sizeof(MotionSensorState) == 0x60);
+
+    /**
+     * @brief How many joycons must be attached for handheld mode to be triggered
+     */
+    enum class NpadHandheldActivationMode : u64 {
+        Dual = 0,
+        Single = 1,
+        None = 2,
+    };
+
     /**
      * @brief The orientations the Joy-Con(s) can be held in
      */
@@ -61,6 +94,8 @@ namespace skyline::input {
     /**
      * @brief A handle to a specific device addressed by its ID and type
      * @note This is used by both Six-Axis and Vibration
+     * @url https://switchbrew.org/wiki/HID_services#SixAxisSensorHandle
+     * @url https://switchbrew.org/wiki/HID_services#VibrationDeviceHandle
      */
     union __attribute__((__packed__)) NpadDeviceHandle {
         u32 raw;
@@ -83,11 +118,22 @@ namespace skyline::input {
                     return NpadControllerType::JoyconLeft;
                 case 7:
                     return NpadControllerType::JoyconRight;
+                case 8:
+                    return NpadControllerType::Gamecube;
                 default:
                     return NpadControllerType::None;
             }
         }
     };
+
+    /**
+     * @url https://switchbrew.org/wiki/HID_services#VibrationDeviceInfo
+     */
+    struct NpadVibrationDeviceInfo {
+        NpadVibrationDeviceType deviceType;
+        NpadVibrationDevicePosition position;
+    };
+    static_assert(sizeof(NpadVibrationDeviceInfo) == 0x8);
 
     /**
      * @brief The parameters to produce a vibration using an LRA
@@ -105,6 +151,15 @@ namespace skyline::input {
     };
     static_assert(sizeof(NpadVibrationValue) == 0x10);
 
+    /**
+     * @url https://switchbrew.org/wiki/HID_services#GyroscopeZeroDriftMode
+     */
+    enum class GyroscopeZeroDriftMode : u32 {
+        Loose = 0,
+        Standard = 1,
+        Tight = 2,
+    };
+
     class NpadManager;
 
     /**
@@ -115,19 +170,45 @@ namespace skyline::input {
         NpadManager &manager; //!< The manager responsible for managing this NpadDevice
         NpadSection &section; //!< The section in HID shared memory for this controller
         NpadControllerInfo *controllerInfo{}; //!< The NpadControllerInfo for this controller's type
+        NpadSixAxisInfo *sixAxisInfoLeft{}; //!< The NpadSixAxisInfo for the main or left side of this controller's type
+        NpadSixAxisInfo *sixAxisInfoRight{}; //!< The NpadSixAxisInfo for the right side of this controller's type
         u64 globalTimestamp{}; //!< An incrementing timestamp that's common across all sections
+        NpadControllerState controllerState{}, defaultState{}; //!< The current state of the controller (normal and default)
+        NpadSixAxisState sixAxisStateLeft{}, sixAxisStateRight{}; //!< The current state of the sixaxis (left and right)
 
         /**
-         * @brief Updates the headers and creates a new entry in HID Shared Memory
+         * @brief Updates the headers and writes a new entry in HID Shared Memory
          * @param info The controller info of the NPad that needs to be updated
-         * @return The next entry that has been created with values from the last entry
+         * @param entry An entry with the state of the controller
          */
-        NpadControllerState &GetNextEntry(NpadControllerInfo &info);
+        void WriteNextEntry(NpadControllerInfo &info, NpadControllerState entry);
+
+        /**
+         * @brief Updates the headers and writes a new entry in HID Shared Memory
+         * @param info The sixaxis controller info of the NPad that needs to be updated
+         * @param entry An entry with the state of the controller
+         */
+        void WriteNextEntry(NpadSixAxisInfo &info, NpadSixAxisState entry);
+
+        /**
+         * @brief Writes on all ring lifo buffers a new empty entry in HID Shared Memory
+         */
+        void WriteEmptyEntries();
+
+        /**
+         * @brief Reverts all device properties to the default state
+         */
+        void ResetDeviceProperties();
 
         /**
          * @return The NpadControllerInfo for this controller based on its type
          */
         NpadControllerInfo &GetControllerInfo();
+
+        /**
+         * @return The NpadSixAxisInfo for this controller based on its type
+         */
+        NpadSixAxisInfo &GetSixAxisInfo(MotionId id);
 
       public:
         NpadId id;
@@ -139,6 +220,7 @@ namespace skyline::input {
         NpadControllerType type{};
         NpadConnectionState connectionState{};
         std::shared_ptr<kernel::type::KEvent> updateEvent; //!< This event is triggered on the controller's style changing
+        GyroscopeZeroDriftMode gyroZeroDriftMode;
 
         NpadDevice(NpadManager &manager, NpadSection &section, NpadId id);
 
@@ -161,6 +243,11 @@ namespace skyline::input {
         void Disconnect();
 
         /**
+         * @brief Writes the current state of the controller to HID shared memory
+         */
+        void UpdateSharedMemory();
+
+        /**
          * @brief Changes the state of buttons to the specified state
          * @param mask A bit-field mask of all the buttons to change
          * @param pressed If the buttons were pressed or released
@@ -173,6 +260,13 @@ namespace skyline::input {
          * @param value The value to set
          */
         void SetAxisValue(NpadAxisId axis, i32 value);
+
+        /**
+         * @brief Sets the value of a motion sensor to the specified value
+         * @param motion The motion sensor to set the value of
+         * @param value The value to set
+         */
+        void SetMotionValue(MotionId sensor, MotionSensorState *value);
 
         /**
          * @brief Sets the vibration for both the Joy-Cons to the specified vibration values

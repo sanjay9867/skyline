@@ -17,7 +17,13 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystemProxy::OpenSdCardFileSystem(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(std::make_shared<IFileSystem>(std::make_shared<vfs::OsFileSystem>(state.os->appFilesPath + "/switch/sdmc/"), state, manager), session, response);
+        manager.RegisterService(std::make_shared<IFileSystem>(std::make_shared<vfs::OsFileSystem>(state.os->publicAppFilesPath + "/switch/sdmc/"), state, manager), session, response);
+        return {};
+    }
+
+    Result IFileSystemProxy::GetCacheStorageSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u64>(0);
+        response.Push<u64>(0);
         return {};
     }
 
@@ -57,8 +63,14 @@ namespace skyline::service::fssrv {
             }
         }()};
 
-        manager.RegisterService(std::make_shared<IFileSystem>(std::make_shared<vfs::OsFileSystem>(state.os->appFilesPath + "/switch" + saveDataPath), state, manager), session, response);
+        manager.RegisterService(std::make_shared<IFileSystem>(std::make_shared<vfs::OsFileSystem>(state.os->publicAppFilesPath + "/switch" + saveDataPath), state, manager), session, response);
         return {};
+    }
+
+    Result IFileSystemProxy::OpenReadOnlySaveDataFileSystem(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // Forward to OpenSaveDataFileSystem for now.
+        // TODO: This should wrap the underlying filesystem with nn::fs::ReadOnlyFileSystem.
+        return OpenSaveDataFileSystem(session, request, response);
     }
 
     Result IFileSystemProxy::OpenDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -67,6 +79,21 @@ namespace skyline::service::fssrv {
 
         manager.RegisterService(std::make_shared<IStorage>(state.loader->romFs, state, manager), session, response);
         return {};
+    }
+
+    Result IFileSystemProxy::OpenDataStorageByDataId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto storageId{request.Pop<StorageId>()};
+        request.Skip<std::array<u8, 7>>(); // 7-bytes padding
+        auto titleId{request.Pop<u64>()};
+
+        auto romFs{std::make_shared<IStorage>(state.os->assetFileSystem->OpenFile(fmt::format("romfs/{:016X}", titleId)), state, manager)};
+
+        manager.RegisterService(romFs, session, response);
+        return {};
+    }
+
+    Result IFileSystemProxy::OpenPatchDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return result::EntityNotFound;
     }
 
     Result IFileSystemProxy::GetGlobalAccessLogMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {

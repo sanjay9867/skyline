@@ -11,9 +11,6 @@
 [submodule "Frozen"]
 	path = app/libraries/frozen
 	url = https://github.com/serge-sans-paille/frozen
-[submodule "PugiXML"]
-	path = app/libraries/pugixml
-	url = https://github.com/zeux/pugixml.git
 [submodule "tzcode"]
 	path = app/libraries/tzcode
 	url = https://github.com/skyline-emu/tz
@@ -36,9 +33,33 @@
 	url = https://github.com/xiph/opus
 [submodule "Boost"]
 	path = app/libraries/boost
-	url = https://github.com/boostorg/boost.git
+	url = https://github.com/skyline-emu/boost.git
 	ignore = all
 [submodule "LLVM"]
 	path = app/libraries/llvm
 	url = https://github.com/llvm/llvm-project.git
 	shallow = true
+[submodule "C++ Range v3"]
+	path = app/libraries/range
+	url = https://github.com/ericniebler/range-v3
+[submodule "Sirit"]
+	path = app/libraries/sirit
+	url = https://github.com/yuzu-emu/sirit
+[submodule "Shader Compiler"]
+	path = app/libraries/shader-compiler
+	url = https://github.com/skyline-emu/shader-compiler.git
+[submodule "libadrenotools"]
+	path = app/libraries/adrenotools
+	url = https://github.com/bylaws/libadrenotools/
+[submodule "app/libraries/robin-map"]
+	path = app/libraries/robin-map
+	url = https://github.com/Tessil/robin-map
+[submodule "app/libraries/thread-pool"]
+	path = app/libraries/thread-pool
+	url = https://github.com/bshoshany/thread-pool.git
+[submodule "app/libraries/cubeb"]
+	path = app/libraries/cubeb
+	url = https://github.com/skyline-emu/cubeb
+[submodule "app/libraries/audio-core"]
+	path = app/libraries/audio-core
+	url = https://github.com/skyline-emu/audio-core

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
-// Copyright © 2020 Ryujinx Team and Contributors
+// Copyright © 2020 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #pragma once
 
@@ -62,5 +62,18 @@ namespace skyline::soc::host1x {
         bool Wait(u32 threshold, std::chrono::steady_clock::duration timeout);
     };
 
-    using SyncpointSet = std::array<Syncpoint, SyncpointCount>;
+    /**
+     * @bried Holds host and guest copies of an individual syncpoint
+     */
+    struct SyncpointPair {
+        Syncpoint guest; //!< Incremented at GPFIFO processing time
+        Syncpoint host; //!< Incremented after host GPU completion
+
+        void Increment() {
+            guest.Increment();
+            host.Increment();
+        }
+    };
+
+    using SyncpointSet = std::array<SyncpointPair, SyncpointCount>;
 }

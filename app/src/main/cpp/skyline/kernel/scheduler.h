@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "common/spin_lock.h"
 #include <common.h>
 #include <condition_variable>
 
@@ -46,7 +47,7 @@ namespace skyline {
             struct CoreContext {
                 u8 id;
                 i8 preemptionPriority; //!< The priority at which this core becomes preemptive as opposed to cooperative
-                std::mutex mutex; //!< Synchronizes all operations on the queue
+                SpinLock mutex; //!< Synchronizes all operations on the queue
                 std::list<std::shared_ptr<type::KThread>> queue; //!< A queue of threads which are running or to be run on this core
 
                 CoreContext(u8 id, i8 preemptionPriority);
@@ -58,11 +59,16 @@ namespace skyline {
             std::list<std::shared_ptr<type::KThread>> parkedQueue; //!< A queue of threads which are parked and waiting on core migration
 
             /**
-             * @brief Migrate a thread from its resident core to its ideal core
+             * @brief Migrate a thread from its resident core to the target core
              * @note 'KThread::coreMigrationMutex' **must** be locked by the calling thread prior to calling this
              * @note This is used to handle non-cooperative core affinity mask changes where the resident core is not in its new affinity mask
              */
-            void MigrateToCore(const std::shared_ptr<type::KThread> &thread, CoreContext *&currentCore, CoreContext *targetCore, std::unique_lock<std::mutex> &lock);
+            void MigrateToCore(const std::shared_ptr<type::KThread> &thread, CoreContext *&currentCore, CoreContext *targetCore, std::unique_lock<SpinLock> &lock);
+
+            /**
+             * @brief Trigger a thread to yield via a signal or on SVC exit if it is the current thread
+             */
+            void YieldThread(const std::shared_ptr<type::KThread> &thread);
 
           public:
             static constexpr std::chrono::milliseconds PreemptiveTimeslice{10}; //!< The duration of time a preemptive thread can run before yielding
@@ -87,6 +93,7 @@ namespace skyline {
 
             /**
              * @brief Inserts the specified thread into the scheduler queue at the appropriate location based on its priority
+             * @note This is a non-blocking operation when the thread is paused, the thread will only be inserted when it is resumed
              */
             void InsertThread(const std::shared_ptr<type::KThread> &thread);
 
@@ -123,6 +130,7 @@ namespace skyline {
             /**
              * @brief Updates the core that the supplied thread is resident to according to its new affinity mask and ideal core
              * @note This supports changing the core of a thread which is currently running
+             * @note 'KThread::coreMigrationMutex' **must** be locked by the calling thread prior to calling this
              */
             void UpdateCore(const std::shared_ptr<type::KThread> &thread);
 
@@ -137,6 +145,18 @@ namespace skyline {
              * @note We will only wake a thread if it's determined to be a better pick than the thread which would be run on this core next
              */
             void WakeParkedThread();
+
+            /**
+             * @brief Pauses the supplied thread till a corresponding call to ResumeThread has been made
+             * @note 'KThread::coreMigrationMutex' **must** be locked by the calling thread prior to calling this
+             */
+            void PauseThread(const std::shared_ptr<type::KThread> &thread);
+
+            /**
+             * @brief Resumes a thread which was previously paused by a call to PauseThread
+             * @note 'KThread::coreMigrationMutex' **must** be locked by the calling thread prior to calling this
+             */
+            void ResumeThread(const std::shared_ptr<type::KThread> &thread);
         };
 
         /**

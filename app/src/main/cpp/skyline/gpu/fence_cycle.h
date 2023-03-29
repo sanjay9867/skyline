@@ -3,21 +3,14 @@
 
 #pragma once
 
-#include <forward_list>
+#include <condition_variable>
 #include <vulkan/vulkan_raii.hpp>
 #include <common.h>
+#include <common/spin_lock.h>
+#include <common/atomic_forward_list.h>
 
 namespace skyline::gpu {
-    struct FenceCycle;
-
-    /**
-     * @brief Any object whose lifetime can be attached to a fence cycle needs to inherit this class
-     */
-    struct FenceCycleDependency {
-      private:
-        std::shared_ptr<FenceCycleDependency> next{}; //!< A shared pointer to the next dependendency to form a linked list
-        friend FenceCycle;
-    };
+    class CommandScheduler;
 
     /**
      * @brief A wrapper around a Vulkan Fence which only tracks a single reset -> signal cycle with the ability to attach lifetimes of objects to it
@@ -26,26 +19,43 @@ namespace skyline::gpu {
      */
     struct FenceCycle {
       private:
-        std::atomic_flag signalled;
+        std::atomic_flag signalled{}; //!< If the underlying fence has been signalled since the creation of this FenceCycle, this doesn't necessarily mean the dependencies have been destroyed
+        std::atomic_flag alreadyDestroyed{}; //!< If the cycle's dependencies are already destroyed, this prevents multiple destructions
         const vk::raii::Device &device;
+        std::recursive_timed_mutex mutex;
+        std::condition_variable_any submitCondition;
+        bool submitted{}; //!< If the fence has been submitted to the GPU
         vk::Fence fence;
-        std::shared_ptr<FenceCycleDependency> list;
+        vk::Semaphore semaphore; //!< Semaphore that will be signalled upon GPU completion of the fence
+        bool semaphoreSubmitWait{}; //!< If the semaphore needs to be waited on (on GPU) before the fence's command buffer begins. Used to ensure fences that wouldn't otherwise be unsignalled are unsignalled
+        bool nextSemaphoreSubmitWait{true}; //!< If the next fence cycle created from this one after it's signalled should wait on the semaphore to unsignal it
+        std::shared_ptr<FenceCycle> semaphoreUnsignalCycle{}; //!< If the semaphore is used on the GPU, the cycle for the submission that uses it, so it can be waited on before the fence is signalled to ensure the semaphore is unsignalled
+
+        friend CommandScheduler;
+
+        AtomicForwardList<std::shared_ptr<void>> dependencies; //!< A list of all dependencies on this fence cycle
+        AtomicForwardList<std::shared_ptr<FenceCycle>> chainedCycles; //!< A list of all chained FenceCycles, this is used to express multi-fence dependencies
+        SharedSpinLock chainMutex;
 
         /**
-         * @brief Sequentially iterate through the shared_ptr linked list of dependencies and reset all pointers in a thread-safe atomic manner
-         * @note We cannot simply nullify the base pointer of the list as a false dependency chain is maintained between the objects when retained exteranlly
+         * @brief Destroy all the dependencies of this cycle
          */
         void DestroyDependencies() {
-            auto current{std::atomic_exchange_explicit(&list, std::shared_ptr<FenceCycleDependency>{}, std::memory_order_acquire)};
-            while (current) {
-                std::shared_ptr<FenceCycleDependency> next{};
-                next.swap(current->next);
-                current.swap(next);
+            if (!alreadyDestroyed.test_and_set(std::memory_order_release)) {
+                dependencies.Clear();
+                semaphoreUnsignalCycle = {};
+                std::scoped_lock lock{chainMutex};
+                chainedCycles.Clear();
             }
         }
 
       public:
-        FenceCycle(const vk::raii::Device &device, vk::Fence fence) : signalled(false), device(device), fence(fence) {
+        FenceCycle(const vk::raii::Device &device, vk::Fence fence, vk::Semaphore semaphore, bool signalled = false) : signalled{signalled}, device{device}, fence{fence}, semaphore{semaphore}, nextSemaphoreSubmitWait{!signalled} {
+            if (!signalled)
+                device.resetFences(fence);
+        }
+
+        explicit FenceCycle(const FenceCycle &cycle) : signalled{false}, device{cycle.device}, fence{cycle.fence}, semaphore{cycle.semaphore}, semaphoreSubmitWait{cycle.nextSemaphoreSubmitWait} {
             device.resetFences(fence);
         }
 
@@ -57,46 +67,163 @@ namespace skyline::gpu {
          * @brief Signals this fence regardless of if the underlying fence has been signalled or not
          */
         void Cancel() {
-            if (!signalled.test_and_set(std::memory_order_release))
-                DestroyDependencies();
+            signalled.test_and_set(std::memory_order_release);
+            DestroyDependencies();
+        }
+
+        /**
+         * @brief Executes a function with the fence locked to record a usage of its semaphore, if no semaphore can be provided then a CPU-side wait will be performed instead
+         */
+        std::shared_ptr<FenceCycle> RecordSemaphoreWaitUsage(std::function<std::shared_ptr<FenceCycle>(vk::Semaphore sema)> &&func) {
+            // We can't submit any semaphore waits until the signal has been submitted, so do that first
+            WaitSubmit();
+
+            std::unique_lock lock{mutex};
+
+            // If we already have a semaphore usage, just wait on the fence since we can't wait on it twice and have no way to add one after the fact
+            if (semaphoreUnsignalCycle) {
+                // Safe to unlock since semaphoreUnsignalCycle can never be reset
+                lock.unlock();
+
+                Wait();
+                return func({});
+            }
+
+            // If we're already signalled then there's no need to wait on the semaphore
+            if (signalled.test(std::memory_order_relaxed))
+                return func({});
+
+            semaphoreUnsignalCycle = func(semaphore);
+            nextSemaphoreSubmitWait = false; // We don't need a semaphore wait on the next fence cycle to unsignal the semaphore anymore as the usage will do that
+            return semaphoreUnsignalCycle;
+        }
+
+        /**
+         * @brief Waits for submission of the command buffer associated with this cycle to the GPU
+         */
+        void WaitSubmit() {
+            if (signalled.test(std::memory_order_consume))
+                return;
+
+            std::unique_lock lock{mutex};
+            if (submitted)
+                return;
+
+            if (signalled.test(std::memory_order_consume))
+                return;
+
+            lock.unlock();
+            {
+                std::shared_lock chainLock{chainMutex};
+
+                chainedCycles.Iterate([&](const auto &cycle) {
+                    cycle->WaitSubmit();
+                });
+            }
+            lock.lock();
+
+            submitCondition.wait(lock, [this] { return submitted; });
         }
 
         /**
          * @brief Wait on a fence cycle till it has been signalled
+         * @param shouldDestroy If true, the dependencies of this cycle will be destroyed after the fence is signalled
          */
-        void Wait() {
-            if (signalled.test(std::memory_order_consume))
+        void Wait(bool shouldDestroy = false) {
+            if (signalled.test(std::memory_order_consume)) {
+                if (shouldDestroy) {
+                    std::unique_lock lock{mutex};
+                    DestroyDependencies();
+                }
                 return;
-            while (device.waitForFences(fence, false, std::numeric_limits<u64>::max()) != vk::Result::eSuccess);
-            if (!signalled.test_and_set(std::memory_order_release))
+            }
+
+            {
+                std::shared_lock lock{chainMutex};
+                chainedCycles.Iterate([shouldDestroy](auto &cycle) {
+                    cycle->Wait(shouldDestroy);
+                });
+            }
+
+            std::unique_lock lock{mutex};
+
+            submitCondition.wait(lock, [&] { return submitted; });
+
+            if (signalled.test(std::memory_order_relaxed)) {
+                if (shouldDestroy)
+                    DestroyDependencies();
+                return;
+            }
+
+            vk::Result waitResult;
+            while ((waitResult = (*device).waitForFences(1, &fence, false, std::numeric_limits<u64>::max(), *device.getDispatcher())) != vk::Result::eSuccess) {
+                if (waitResult == vk::Result::eTimeout)
+                    // Retry if the waiting time out
+                    continue;
+
+                if (waitResult == vk::Result::eErrorInitializationFailed)
+                    // eErrorInitializationFailed occurs on Mali GPU drivers due to them using the ppoll() syscall which isn't correctly restarted after a signal, we need to manually retry waiting in that case
+                    continue;
+
+                throw exception("An error occurred while waiting for fence 0x{:X}: {}", static_cast<VkFence>(fence), vk::to_string(waitResult));
+            }
+
+            if (semaphoreUnsignalCycle)
+                semaphoreUnsignalCycle->Wait();
+
+            signalled.test_and_set(std::memory_order_relaxed);
+            if (shouldDestroy)
                 DestroyDependencies();
         }
 
         /**
-         * @brief Wait on a fence cycle with a timeout in nanoseconds
-         * @return If the wait was successful or timed out
-         */
-        bool Wait(std::chrono::duration<u64, std::nano> timeout) {
-            if (signalled.test(std::memory_order_consume))
-                return true;
-            if (device.waitForFences(fence, false, timeout.count()) == vk::Result::eSuccess) {
-                if (!signalled.test_and_set(std::memory_order_release))
-                    DestroyDependencies();
-                return true;
-            } else {
-                return false;
-            }
-        }
-
-        /**
+         * @param quick Skips the call to check the fence's status, just checking the signalled flag
          * @return If the fence is signalled currently or not
          */
-        bool Poll() {
-            if (signalled.test(std::memory_order_consume))
+        bool Poll(bool quick = true, bool shouldDestroy = false) {
+            if (signalled.test(std::memory_order_consume)) {
+                if (shouldDestroy) {
+                    std::unique_lock lock{mutex, std::try_to_lock};
+                    if (!lock)
+                        return false;
+
+                    DestroyDependencies();
+                }
                 return true;
+            }
+
+            if (quick)
+                return false; // We need to return early if we're not waiting on the fence
+
+            {
+                std::shared_lock lock{chainMutex, std::try_to_lock};
+                if (!lock)
+                    return false;
+
+                if (!chainedCycles.AllOf([=](auto &cycle) { return cycle->Poll(quick, shouldDestroy); }))
+                    return false;
+            }
+
+            std::unique_lock lock{mutex, std::try_to_lock};
+            if (!lock)
+                return false;
+
+            if (signalled.test(std::memory_order_relaxed)) {
+                if (shouldDestroy)
+                    DestroyDependencies();
+                return true;
+            }
+
+            if (!submitted)
+                return false;
+
             auto status{(*device).getFenceStatus(fence, *device.getDispatcher())};
             if (status == vk::Result::eSuccess) {
-                if (!signalled.test_and_set(std::memory_order_release))
+                if (semaphoreUnsignalCycle && !semaphoreUnsignalCycle->Poll())
+                    return false;
+
+                signalled.test_and_set(std::memory_order_relaxed);
+                if (shouldDestroy)
                     DestroyDependencies();
                 return true;
             } else {
@@ -107,36 +234,38 @@ namespace skyline::gpu {
         /**
          * @brief Attach the lifetime of an object to the fence being signalled
          */
-        void AttachObject(const std::shared_ptr<FenceCycleDependency> &dependency) {
-            if (!signalled.test(std::memory_order_consume)) {
-                std::shared_ptr<FenceCycleDependency> next{std::atomic_load_explicit(&list, std::memory_order_consume)};
-                do {
-                    dependency->next = next;
-                    if (!next && signalled.test(std::memory_order_consume))
-                        return;
-                } while (std::atomic_compare_exchange_strong_explicit(&list, &next, dependency, std::memory_order_release, std::memory_order_consume));
-            }
+        void AttachObject(const std::shared_ptr<void> &dependency) {
+            if (!signalled.test(std::memory_order_consume))
+                dependencies.Append(dependency);
         }
 
         /**
          * @brief A version of AttachObject optimized for several objects being attached at once
          */
-        void AttachObjects(std::initializer_list<std::shared_ptr<FenceCycleDependency>> dependencies) {
-            if (!signalled.test(std::memory_order_consume)) {
-                auto it{dependencies.begin()}, next{std::next(it)};
-                if (it != dependencies.end()) {
-                    for (; next != dependencies.end(); next++) {
-                        (*it)->next = *next;
-                        it = next;
-                    }
-                }
-                AttachObject(*dependencies.begin());
+        template<typename... Dependencies>
+        void AttachObjects(Dependencies &&... pDependencies) {
+            if (!signalled.test(std::memory_order_consume))
+                dependencies.Append(pDependencies...);
+        }
+
+        /**
+         * @brief Chains another cycle to this cycle, this cycle will not be signalled till the supplied cycle is signalled
+         * @param cycle The cycle to chain to this one, this is nullable and this function will be a no-op if this is nullptr
+         */
+        void ChainCycle(const std::shared_ptr<FenceCycle> &cycle) {
+            if (cycle && !signalled.test(std::memory_order_consume) && cycle.get() != this && !cycle->Poll()) {
+                std::shared_lock lock{chainMutex};
+                chainedCycles.Append(cycle); // If the cycle isn't the current cycle or already signalled, we need to chain it
             }
         }
 
-        template<typename... Dependencies>
-        void AttachObjects(Dependencies &&... dependencies) {
-            AttachObjects(std::initializer_list<std::shared_ptr<FenceCycleDependency>>{std::forward<Dependencies>(dependencies)...});
+        /**
+         * @brief Notifies all waiters that the command buffer associated with this cycle has been submitted
+         */
+        void NotifySubmitted() {
+            std::scoped_lock lock{mutex};
+            submitted = true;
+            submitCondition.notify_all();
         }
     };
 }

@@ -24,6 +24,21 @@ namespace skyline::service::fssrv {
         Result CreateFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @brief Deletes a file at the specified path in the filesystem
+         */
+        Result DeleteFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Creates a directory at the specified path in the filesystem
+         */
+        Result CreateDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Deletes a directory at the specified path in the filesystem
+         */
+        Result DeleteDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Queries the DirectoryEntryType of the given path
          * @url https://switchbrew.org/wiki/Filesystem_services#GetEntryType
          */
@@ -46,12 +61,22 @@ namespace skyline::service::fssrv {
          */
         Result Commit(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        /**
+         * @brief Returns the total free space of the filesystem
+         * @url https://switchbrew.org/wiki/Filesystem_services#GetFreeSpaceSize
+         */
+        Result GetFreeSpaceSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         SERVICE_DECL(
             SFUNC(0x0, IFileSystem, CreateFile),
+            SFUNC(0x1, IFileSystem, DeleteFile),
+            SFUNC(0x2, IFileSystem, CreateDirectory),
+            SFUNC(0x3, IFileSystem, DeleteDirectory),
             SFUNC(0x7, IFileSystem, GetEntryType),
             SFUNC(0x8, IFileSystem, OpenFile),
             SFUNC(0x9, IFileSystem, OpenDirectory),
-            SFUNC(0xA, IFileSystem, Commit)
+            SFUNC(0xA, IFileSystem, Commit),
+            SFUNC(0xB, IFileSystem, GetFreeSpaceSize)
         )
     };
 }

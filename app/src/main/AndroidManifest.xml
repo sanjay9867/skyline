@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    package="emu.skyline">
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -13,18 +12,25 @@
 
     <application
         android:name=".SkylineApplication"
+        android:enableOnBackInvokedCallback="true"
         android:allowBackup="true"
         android:extractNativeLibs="true"
         android:fullBackupContent="@xml/backup_descriptor"
+        android:hasFragileUserData="${shouldSaveUserData}"
         android:icon="@drawable/logo_skyline"
         android:isGame="true"
-        android:label="@string/app_name"
+        android:label="${appLabel}"
+        android:localeConfig="@xml/locales_config"
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
         tools:ignore="GoogleAppIndexingWarning,UnusedAttribute">
+
+        <profileable android:shell="true" />
+
         <activity
-            android:name="emu.skyline.MainActivity"
-            android:exported="true">
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -32,43 +38,41 @@
         </activity>
 
         <activity
-            android:name="emu.skyline.SettingsActivity"
+            android:name=".settings.SettingsActivity"
             android:exported="true"
             android:label="@string/settings"
-            android:parentActivityName="emu.skyline.MainActivity">
-            <meta-data
-                android:name="android.support.PARENT_ACTIVITY"
-                android:value="emu.skyline.MainActivity" />
+            android:launchMode="singleTop"
+            android:parentActivityName=".MainActivity">
         </activity>
 
         <activity
-            android:name="emu.skyline.input.ControllerActivity"
-            android:exported="true">
-            <meta-data
-                android:name="android.support.PARENT_ACTIVITY"
-                android:value="emu.skyline.SettingsActivity" />
-        </activity>
-
-        <activity
-            android:name="emu.skyline.input.onscreen.OnScreenEditActivity"
+            android:name=".input.ControllerActivity"
             android:exported="true"
-            android:screenOrientation="landscape"
-            tools:ignore="LockedOrientationActivity">
-            <meta-data
-                android:name="android.support.PARENT_ACTIVITY"
-                android:value="emu.skyline.input.ControllerActivity" />
+            android:parentActivityName=".settings.SettingsActivity">
         </activity>
 
         <activity
-            android:name="emu.skyline.EmulationActivity"
-            android:configChanges="orientation|screenSize"
+            android:name=".preference.GpuDriverActivity"
+            android:exported="true"
+            android:parentActivityName=".settings.SettingsActivity">
+        </activity>
+
+        <activity
+            android:name=".input.onscreen.OnScreenEditActivity"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            tools:ignore="LockedOrientationActivity"
+            android:parentActivityName=".input.ControllerActivity">
+        </activity>
+
+        <activity
+            android:name=".EmulationActivity"
+            android:supportsPictureInPicture="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="landscape"
-            tools:ignore="LockedOrientationActivity">
-            <meta-data
-                android:name="android.support.PARENT_ACTIVITY"
-                android:value="emu.skyline.MainActivity" />
+            android:process="${emulationProcess}"
+            android:parentActivityName=".MainActivity">
 
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -90,27 +94,41 @@
                     android:mimeType="text/plain"
                     android:pathPattern=".*\\.nro"
                     android:scheme="content"
-                    tools:ignore="AppLinkUrlError" />
+                    tools:ignore="IntentFilterUniqueDataAttributes" />
                 <data
                     android:mimeType="application/octet-stream"
                     android:pathPattern=".*\\.nro"
                     android:scheme="content"
-                    tools:ignore="AppLinkUrlError" />
+                    tools:ignore="IntentFilterUniqueDataAttributes" />
                 <data
                     android:mimeType="application/nro"
                     android:scheme="content"
-                    tools:ignore="AppLinkUrlError" />
+                    tools:ignore="IntentFilterUniqueDataAttributes" />
             </intent-filter>
         </activity>
 
         <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="skyline.emu.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/filepaths" />
+            android:name=".provider.DocumentsProvider"
+            android:authorities="${applicationId}.provider"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
         </provider>
+
+        <service
+            android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
+            android:enabled="false"
+            android:exported="false">
+            <meta-data
+                android:name="autoStoreLocales"
+                android:value="true" />
+        </service>
+
+        <meta-data
+            android:name="com.android.graphics.injectLayers.enable"
+            android:value="true" />
     </application>
 </manifest>

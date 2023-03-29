@@ -4,6 +4,7 @@
 #pragma once
 
 #include <common/trace.h>
+#include <common/spin_lock.h>
 #include <common.h>
 
 namespace skyline {
@@ -14,12 +15,12 @@ namespace skyline {
     class CircularQueue {
       private:
         std::vector<u8> vector; //!< The internal vector holding the circular queue's data, we use a byte vector due to the default item construction/destruction semantics not being appropriate for a circular buffer
-        Type *start{reinterpret_cast<Type *>(vector.begin().base())}; //!< The start/oldest element of the queue
-        Type *end{reinterpret_cast<Type *>(vector.begin().base())}; //!< The end/newest element of the queue
-        std::mutex consumptionMutex;
-        std::condition_variable consumeCondition;
-        std::mutex productionMutex;
-        std::condition_variable produceCondition;
+        std::atomic<Type *> start{reinterpret_cast<Type *>(vector.begin().base())}; //!< The start/oldest element of the queue
+        std::atomic<Type *> end{reinterpret_cast<Type *>(vector.begin().base())}; //!< The end/newest element of the queue
+        SpinLock consumptionMutex;
+        std::condition_variable_any consumeCondition;
+        SpinLock productionMutex;
+        std::condition_variable_any produceCondition;
 
       public:
         /**
@@ -49,20 +50,22 @@ namespace skyline {
         /**
          * @brief A blocking for-each that runs on every item and waits till new items to run on them as well
          * @param function A function that is called for each item (with the only parameter as a reference to that item)
+         * @param preWait An optional function that's called prior to waiting on more items to be queued
          */
-        template<typename F>
-        [[noreturn]] void Process(F function) {
+        template<typename F1, typename F2>
+        [[noreturn]] void Process(F1 function, F2 preWait) {
             TRACE_EVENT_BEGIN("containers", "CircularQueue::Process");
 
             while (true) {
                 if (start == end) {
-                    std::unique_lock lock(productionMutex);
-
+                    std::unique_lock productionLock{productionMutex};
                     TRACE_EVENT_END("containers");
-                    produceCondition.wait(lock, [this]() { return start != end; });
+                    preWait();
+                    produceCondition.wait(productionLock, [this]() { return start != end; });
                     TRACE_EVENT_BEGIN("containers", "CircularQueue::Process");
                 }
 
+                std::scoped_lock comsumptionLock{consumptionMutex};
                 while (start != end) {
                     auto next{start + 1};
                     next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
@@ -74,32 +77,58 @@ namespace skyline {
             }
         }
 
-        void Push(const Type &item) {
-            std::unique_lock lock(productionMutex);
-            auto next{end + 1};
-            next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
-            if (next == start) {
-                std::unique_lock consumeLock(consumptionMutex);
-                consumeCondition.wait(consumeLock, [=]() { return next != start; });
+        Type Pop() {
+            {
+                std::unique_lock productionLock{productionMutex};
+                produceCondition.wait(productionLock, [this]() { return start != end; });
             }
-            *next = item;
-            end = next;
-            produceCondition.notify_one();
+
+            std::scoped_lock comsumptionLock{consumptionMutex};
+            auto next{start + 1};
+            next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
+            Type item{*next};
+            start = next;
+
+            consumeCondition.notify_one();
+
+            return item;
         }
 
-        void Append(span <Type> buffer) {
-            std::unique_lock lock(productionMutex);
-            for (const auto &item : buffer) {
+        void Push(const Type &item) {
+            Type *waitNext{};
+            Type *waitEnd{};
+
+            while (true) {
+                if (waitNext) {
+                    std::unique_lock consumeLock{consumptionMutex};
+
+                    consumeCondition.wait(consumeLock, [=]() { return waitNext != start || waitEnd != end; });
+                    waitNext = nullptr;
+                    waitEnd = nullptr;
+                }
+
+                std::scoped_lock lock{productionMutex};
                 auto next{end + 1};
                 next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
                 if (next == start) {
-                    std::unique_lock consumeLock(consumptionMutex);
-                    consumeCondition.wait(consumeLock, [=]() { return next != start; });
+                    waitNext = next;
+                    waitEnd = end;
+                    continue;
                 }
                 *next = item;
-                end = next++;
+                end = next;
+                produceCondition.notify_one();
+                break;
             }
-            produceCondition.notify_one();
+
+        }
+
+        /**
+         * @note The appended elements may not necessarily be directly contiguous as another thread could push elements in between those in the span
+         */
+        void Append(span<Type> buffer) {
+            for (const auto &item : buffer)
+                Push(item);
         }
 
         /**
@@ -107,19 +136,9 @@ namespace skyline {
          * @param tranformation A function that takes in an item of TransformedType as input and returns an item of Type
          */
         template<typename TransformedType, typename Transformation>
-        void AppendTranform(span <TransformedType> buffer, Transformation transformation) {
-            std::unique_lock lock(productionMutex);
-            for (const auto &item : buffer) {
-                auto next{end + 1};
-                next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
-                if (next == start) {
-                    std::unique_lock consumeLock(consumptionMutex);
-                    consumeCondition.wait(consumeLock, [=]() { return next != start; });
-                }
-                *next = transformation(item);
-                end = next;
-            }
-            produceCondition.notify_one();
+        void AppendTranform(TransformedType &container, Transformation transformation) {
+            for (const auto &item : container)
+                Push(transformation(item));
         }
     };
 }

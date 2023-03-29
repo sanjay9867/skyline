@@ -10,11 +10,17 @@ namespace skyline::service::fssrv {
     IFileSystem::IFileSystem(std::shared_ptr<vfs::FileSystem> backing, const DeviceState &state, ServiceManager &manager) : backing(std::move(backing)), BaseService(state, manager) {}
 
     Result IFileSystem::CreateFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::string path(request.inputBuf.at(0).as_string(true));
+        std::string path{request.inputBuf.at(0).as_string(true)};
         auto mode{request.Pop<u64>()};
         auto size{request.Pop<u32>()};
 
         return backing->CreateFile(path, size) ? Result{} : result::PathDoesNotExist;
+    }
+
+    Result IFileSystem::CreateDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        std::string path{request.inputBuf.at(0).as_string(true)};
+
+        return backing->CreateDirectory(path, true) ? Result{} : result::PathDoesNotExist;
     }
 
     Result IFileSystem::GetEntryType(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -23,7 +29,7 @@ namespace skyline::service::fssrv {
         auto type{backing->GetEntryType(path)};
 
         if (type) {
-            response.Push(*type);
+            response.Push(static_cast<u32>(*type));
             return {};
         } else {
             response.Push<u32>(0);
@@ -47,6 +53,20 @@ namespace skyline::service::fssrv {
         return {};
     }
 
+    Result IFileSystem::DeleteFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        std::string path(request.inputBuf.at(0).as_string(true));
+
+        backing->DeleteFile(path);
+        return {};
+    }
+
+    Result IFileSystem::DeleteDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        std::string path(request.inputBuf.at(0).as_string(true));
+
+        backing->DeleteDirectory(path);
+        return {};
+    }
+
     Result IFileSystem::OpenDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         std::string path(request.inputBuf.at(0).as_string(true));
 
@@ -55,12 +75,20 @@ namespace skyline::service::fssrv {
 
         auto listMode{request.Pop<vfs::Directory::ListMode>()};
         auto directory{backing->OpenDirectory(path, listMode)};
+        if (!directory)
+            return result::PathDoesNotExist;
 
         manager.RegisterService(std::make_shared<IDirectory>(std::move(directory), backing, state, manager), session, response);
         return {};
     }
 
     Result IFileSystem::Commit(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
+    Result IFileSystem::GetFreeSpaceSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        //TODO: proper implementation for GetFreeSpaceSize
+        response.Push<u64>(90000000);
         return {};
     }
 }

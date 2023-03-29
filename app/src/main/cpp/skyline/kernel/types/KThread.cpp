@@ -35,9 +35,13 @@ namespace skyline::kernel::type {
     }
 
     void KThread::StartThread() {
-        std::array<char, 16> threadName;
-        pthread_getname_np(pthread, threadName.data(), threadName.size());
-        pthread_setname_np(pthread, fmt::format("HOS-{}", id).c_str());
+        pthread = pthread_self();
+        std::array<char, 16> threadName{};
+        if (int result{pthread_getname_np(pthread, threadName.data(), threadName.size())})
+            Logger::Warn("Failed to get the thread name: {}", strerror(result));
+
+        if (int result{pthread_setname_np(pthread, fmt::format("HOS-{}", id).c_str())})
+            Logger::Warn("Failed to set the thread name: {}", strerror(result));
         Logger::UpdateTag();
 
         if (!ctx.tpidrroEl0)
@@ -51,7 +55,7 @@ namespace skyline::kernel::type {
             state.scheduler->RemoveThread();
 
             {
-                std::lock_guard lock(statusMutex);
+                std::scoped_lock lock{statusMutex};
                 running = false;
                 ready = false;
                 statusCondition.notify_all();
@@ -60,7 +64,8 @@ namespace skyline::kernel::type {
             Signal();
 
             if (threadName[0] != 'H' || threadName[1] != 'O' || threadName[2] != 'S' || threadName[3] != '-') {
-                pthread_setname_np(pthread, threadName.data());
+                if (int result{pthread_setname_np(pthread, threadName.data())})
+                    Logger::Warn("Failed to set the thread name: {}", strerror(result));
                 Logger::UpdateTag();
             }
 
@@ -79,7 +84,7 @@ namespace skyline::kernel::type {
         signal::SetSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::SignalHandler, false); // We want futexes to fail and their predicates rechecked
 
         {
-            std::lock_guard lock(statusMutex);
+            std::scoped_lock lock{statusMutex};
             ready = true;
             statusCondition.notify_all();
         }
@@ -177,6 +182,7 @@ namespace skyline::kernel::type {
             __builtin_unreachable();
         } catch (const std::exception &e) {
             Logger::Error(e.what());
+            Logger::EmulationContext.Flush();
             if (id) {
                 signal::BlockSignal({SIGINT});
                 state.process->Kill(false);
@@ -186,6 +192,7 @@ namespace skyline::kernel::type {
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 Logger::Error(e.what());
+                Logger::EmulationContext.Flush();
                 if (id) {
                     signal::BlockSignal({SIGINT});
                     state.process->Kill(false);
@@ -200,7 +207,7 @@ namespace skyline::kernel::type {
         std::unique_lock lock(statusMutex);
         if (!running) {
             {
-                std::lock_guard migrationLock(coreMigrationMutex);
+                std::scoped_lock migrationLock{coreMigrationMutex};
                 auto thisShared{shared_from_this()};
                 coreId = state.scheduler->GetOptimalCoreForThread(thisShared).id;
                 state.scheduler->InsertThread(thisShared);
@@ -210,12 +217,10 @@ namespace skyline::kernel::type {
             killed = false;
             statusCondition.notify_all();
             if (self) {
-                pthread = pthread_self();
                 lock.unlock();
                 StartThread();
             } else {
                 thread = std::thread(&KThread::StartThread, this);
-                pthread = thread.native_handle();
             }
         }
     }
@@ -268,7 +273,9 @@ namespace skyline::kernel::type {
     }
 
     void KThread::UpdatePriorityInheritance() {
-        auto waitingOn{waitThread};
+        std::unique_lock lock{waiterMutex};
+
+        std::shared_ptr<KThread> waitingOn{waitThread};
         i8 currentPriority{priority.load()};
         while (waitingOn) {
             i8 ownerPriority;
@@ -278,14 +285,46 @@ namespace skyline::kernel::type {
                 ownerPriority = waitingOn->priority.load();
                 if (ownerPriority <= currentPriority)
                     return;
-            } while (waitingOn->priority.compare_exchange_strong(ownerPriority, currentPriority));
+            } while (!waitingOn->priority.compare_exchange_strong(ownerPriority, currentPriority));
 
             if (ownerPriority != currentPriority) {
-                std::lock_guard waiterLock(waitingOn->waiterMutex);
+                std::unique_lock waiterLock{waitingOn->waiterMutex, std::try_to_lock};
+                if (!waiterLock) {
+                    // We want to avoid a deadlock here from the thread holding waitingOn->waiterMutex waiting for waiterMutex
+                    // We use a fallback mechanism to avoid this, resetting the state and trying again after being able to successfully acquire waitingOn->waiterMutex once
+                    waitingOn->priority = ownerPriority;
+
+                    lock.unlock();
+
+                    waiterLock.lock();
+                    waiterLock.unlock();
+
+                    lock.lock();
+                    waitingOn = waitThread;
+
+                    continue;
+                }
+
                 auto nextThread{waitingOn->waitThread};
                 if (nextThread) {
                     // We need to update the location of the owner thread in the waiter queue of the thread it's waiting on
-                    std::lock_guard nextWaiterLock(nextThread->waiterMutex);
+                    std::unique_lock nextWaiterLock{nextThread->waiterMutex, std::try_to_lock};
+                    if (!nextWaiterLock) {
+                        // We want to avoid a deadlock here from the thread holding nextThread->waiterMutex waiting for waiterMutex or waitingOn->waiterMutex
+                        waitingOn->priority = ownerPriority;
+
+                        lock.unlock();
+                        waiterLock.unlock();
+
+                        nextWaiterLock.lock();
+                        nextWaiterLock.unlock();
+
+                        lock.lock();
+                        waitingOn = waitThread;
+
+                        continue;
+                    }
+
                     auto &piWaiters{nextThread->waiters};
                     piWaiters.erase(std::find(piWaiters.begin(), piWaiters.end(), waitingOn));
                     piWaiters.insert(std::upper_bound(piWaiters.begin(), piWaiters.end(), currentPriority, KThread::IsHigherPriority), waitingOn);

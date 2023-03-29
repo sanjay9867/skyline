@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 // Copyright © 2005 The Android Open Source Project
-// Copyright © 2019-2020 Ryujinx Team and Contributors
+// Copyright © 2019-2020 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #include <gpu.h>
 #include <gpu/texture/format.h>
@@ -92,59 +92,56 @@ namespace skyline::service::hosbinder {
         constexpr i32 InvalidGraphicBufferSlot{-1}; //!< https://cs.android.com/android/platform/superproject/+/android-5.1.1_r38:frameworks/native/include/gui/BufferQueueCore.h;l=61
         slot = InvalidGraphicBufferSlot;
 
-        std::scoped_lock lock(mutex);
-        // We don't need a loop here since the consumer is blocking and instantly frees all buffers
-        // If a valid slot is not found on the first iteration then it would be stuck in an infinite loop
-        // As a result of this, we simply warn and return InvalidOperation to the guest
+        std::unique_lock lock{mutex};
         auto buffer{queue.end()};
-        size_t dequeuedSlotCount{};
-        for (auto it{queue.begin()}; it != std::min(queue.begin() + activeSlotCount, queue.end()); it++) {
-            // We want to select the oldest slot that's free to use as we'd want all slots to be used
-            // If we go linearly then we have a higher preference for selecting the former slots and being out of order
-            if (it->state == BufferState::Free) {
-                if (buffer == queue.end() || it->frameNumber < buffer->frameNumber)
-                    buffer = it;
-            } else if (it->state == BufferState::Dequeued) {
-                dequeuedSlotCount++;
+        freeCondition.wait(lock, [&]() {
+            size_t dequeuedSlotCount{};
+            for (auto it{queue.begin()}; it != std::min(queue.begin() + activeSlotCount, queue.end()); it++) {
+                // We want to select the oldest slot that's free to use as we'd want all slots to be used
+                // If we go linearly then we have a higher preference for selecting the former slots and being out of order
+                if (it->state == BufferState::Free) {
+                    if (buffer == queue.end() || it->frameNumber < buffer->frameNumber)
+                        buffer = it;
+                } else if (it->state == BufferState::Dequeued) {
+                    dequeuedSlotCount++;
+                }
             }
-        }
 
-        if (buffer != queue.end()) {
-            slot = static_cast<i32>(std::distance(queue.begin(), buffer));
-        } else if (async) {
-            return AndroidStatus::WouldBlock;
-        } else if (dequeuedSlotCount == queue.size()) {
-            Logger::Warn("Client attempting to dequeue more buffers when all buffers are dequeued by the client: {}", dequeuedSlotCount);
+            if (buffer != queue.end()) {
+                slot = static_cast<i32>(std::distance(queue.begin(), buffer));
+                return true;
+            } else if (dequeuedSlotCount == queue.size()) {
+                Logger::Warn("Client attempting to dequeue more buffers when all buffers are dequeued by the client: {}", dequeuedSlotCount);
+                slot = InvalidGraphicBufferSlot;
+                return true;
+            }
+
+            buffer = queue.end();
+            return false;
+        });
+
+        if (slot == InvalidGraphicBufferSlot) [[unlikely]]
             return AndroidStatus::InvalidOperation;
-        } else {
-            size_t index{};
-            std::string bufferString;
-            for (auto &bufferSlot : queue)
-                bufferString += util::Format("\n#{} - State: {}, Has Graphic Buffer: {}, Frame Number: {}", ++index, ToString(bufferSlot.state), bufferSlot.graphicBuffer != nullptr, bufferSlot.frameNumber);
-            Logger::Warn("Cannot find any free buffers to dequeue:{}", bufferString);
-            return AndroidStatus::InvalidOperation;
-        }
 
         width = width ? width : defaultWidth;
         height = height ? height : defaultHeight;
         format = (format != AndroidPixelFormat::None) ? format : defaultFormat;
 
-        if (!buffer->graphicBuffer) {
+        auto &graphicBuffer{buffer->graphicBuffer};
+        if (!graphicBuffer)
             // Horizon OS doesn't ever allocate memory for the buffers on the GraphicBufferProducer end
             // All buffers must be preallocated on the client application and attached to an Android buffer using SetPreallocatedBuffer
             return AndroidStatus::NoMemory;
-        }
-        auto &handle{buffer->graphicBuffer->graphicHandle};
-        auto &surface{handle.surfaces.front()};
-        if (handle.format != format || surface.width != width || surface.height != height || (buffer->graphicBuffer->usage & usage) != usage) {
-            Logger::Warn("Buffer which has been dequeued isn't compatible with the supplied parameters: Dimensions: {}x{}={}x{}, Format: {}={}, Usage: 0x{:X}=0x{:X}", width, height, surface.width, surface.height, ToString(format), ToString(buffer->graphicBuffer->format), usage, buffer->graphicBuffer->usage);
+
+        if (graphicBuffer->format != format || graphicBuffer->width != width || graphicBuffer->height != height || (graphicBuffer->usage & usage) != usage) {
+            Logger::Warn("Buffer which has been dequeued isn't compatible with the supplied parameters: Dimensions: {}x{}={}x{}, Format: {}={}, Usage: 0x{:X}=0x{:X}", width, height, graphicBuffer->width, graphicBuffer->height, ToString(format), ToString(graphicBuffer->format), usage, graphicBuffer->usage);
             // Nintendo doesn't deallocate the slot which was picked in here and reallocate it as a compatible buffer
             // This is related to the comment above, Nintendo only allocates buffers on the client side
             return AndroidStatus::NoInit;
         }
 
         buffer->state = BufferState::Dequeued;
-        fence = AndroidFence{}; // We just let the presentation engine return a buffer which is ready to be written into, there is no need for further synchronization
+        fence = buffer->fence; // We just let the presentation engine return a buffer which is ready to be written into, there is no need for further synchronization
 
         Logger::Debug("#{} - Dimensions: {}x{}, Format: {}, Usage: 0x{:X}, Is Async: {}", slot, width, height, ToString(format), usage, async);
         return AndroidStatus::Ok;
@@ -267,7 +264,7 @@ namespace skyline::service::hosbinder {
                 return AndroidStatus::BadValue;
         }
 
-        std::scoped_lock lock(mutex);
+        std::unique_lock lock(mutex);
         if (slot < 0 || slot >= queue.size()) [[unlikely]] {
             Logger::Warn("#{} was out of range", slot);
             return AndroidStatus::BadValue;
@@ -306,11 +303,12 @@ namespace skyline::service::hosbinder {
                 case AndroidPixelFormat::RGBX8888:
                     format = gpu::format::R8G8B8A8Unorm;
                     break;
-
+                case AndroidPixelFormat::BGRA8888:
+                    format = gpu::format::B8G8R8A8Unorm;
+                    break;
                 case AndroidPixelFormat::RGB565:
                     format = gpu::format::R5G6B5Unorm;
                     break;
-
                 default:
                     throw exception("Unknown format in buffer: '{}' ({})", ToString(handle.format), static_cast<u32>(handle.format));
             }
@@ -343,8 +341,12 @@ namespace skyline::service::hosbinder {
                 throw exception("Legacy 16Bx16 tiled surfaces are not supported");
             }
 
-            gpu::GuestTexture guestTexture(span<u8>(nvMapHandleObj->GetPointer() + surface.offset, surface.size), gpu::texture::Dimensions(surface.width, surface.height), format, tileConfig, gpu::texture::TextureType::e2D);
-            buffer.texture = state.gpu->texture.FindOrCreate(guestTexture).backing;
+            gpu::texture::Dimensions dimensions(surface.width, surface.height);
+            gpu::GuestTexture guestTexture(span<u8>{}, dimensions, format, tileConfig, vk::ImageViewType::e2D);
+            guestTexture.mappings[0] = span<u8>(nvMapHandleObj->GetPointer() + surface.offset, guestTexture.GetLayerStride());
+
+            std::scoped_lock channelLock{state.gpu->channelLock};
+            buffer.texture = state.gpu->texture.FindOrCreate(guestTexture);
         }
 
         switch (transform) {
@@ -381,19 +383,9 @@ namespace skyline::service::hosbinder {
                 throw exception("Application attempting to perform unknown sticky transformation: {:#b}", static_cast<u32>(stickyTransform));
         }
 
-        fence.Wait(state.soc->host1x);
-
-        {
-            auto &texture{buffer.texture};
-            std::scoped_lock textureLock(*texture);
-            texture->SynchronizeHost();
-            u64 frameId;
-            state.gpu->presentation.Present(texture, isAutoTimestamp ? 0 : timestamp, swapInterval, crop, scalingMode, transform, frameId);
-        }
-
+        buffer.state = BufferState::Queued;
         buffer.frameNumber = ++frameNumber;
-        buffer.state = BufferState::Free;
-        bufferEvent->Signal();
+        buffer.fence = fence;
 
         width = defaultWidth;
         height = defaultHeight;
@@ -401,6 +393,20 @@ namespace skyline::service::hosbinder {
         pendingBufferCount = GetPendingBufferCount();
 
         Logger::Debug("#{} - {}Timestamp: {}, Crop: ({}-{})x({}-{}), Scale Mode: {}, Transform: {} [Sticky: {}], Swap Interval: {}, Is Async: {}", slot, isAutoTimestamp ? "Auto " : "", timestamp, crop.left, crop.right, crop.top, crop.bottom, ToString(scalingMode), ToString(transform), ToString(stickyTransform), swapInterval, async);
+
+        // We can present with the mutex locked as if the queue ends up waiting for free space then the lock will never be released as the dequeue callback also locks the lock
+        lock.unlock();
+
+        std::weak_ptr<GraphicBufferProducer> weakThis{shared_from_this()};
+        state.gpu->presentation.Present(buffer.texture, isAutoTimestamp ? 0 : timestamp, swapInterval, crop, scalingMode, transform, fence, [weakThis, &buffer] {
+            if (auto gbp{weakThis.lock()}) {
+                std::scoped_lock lock{gbp->mutex};
+                buffer.state = BufferState::Free;
+                gbp->bufferEvent->Signal();
+                gbp->freeCondition.notify_all();
+            }
+        });
+
         return AndroidStatus::Ok;
     }
 
@@ -573,6 +579,9 @@ namespace skyline::service::hosbinder {
             else if (surface.layout == NvSurfaceLayout::Tiled)
                 throw exception("Legacy 16Bx16 tiled surfaces are not supported");
 
+            defaultFormat = graphicBuffer->format;
+            defaultWidth = graphicBuffer->width;
+            defaultHeight = graphicBuffer->height;
             Logger::Debug("#{} - Dimensions: {}x{} [Stride: {}], Format: {}, Layout: {}, {}: {}, Usage: 0x{:X}, NvMap {}: {}, Buffer Start/End: 0x{:X} -> 0x{:X}", slot, surface.width, surface.height, handle.stride, ToString(handle.format), ToString(surface.layout), surface.layout == NvSurfaceLayout::Blocklinear ? "Block Height" : "Pitch", surface.layout == NvSurfaceLayout::Blocklinear ? 1U << surface.blockHeightLog2 : surface.pitch, graphicBuffer->usage, surface.nvmapHandle ? "Handle" : "ID", surface.nvmapHandle ? surface.nvmapHandle : handle.nvmapId, surface.offset, surface.offset + surface.size);
         } else {
             Logger::Debug("#{} - No GraphicBuffer", slot);
@@ -657,7 +666,7 @@ namespace skyline::service::hosbinder {
             }
 
             case TransactionCode::CancelBuffer: {
-                CancelBuffer(in.Pop<i32>(), in.Pop<AndroidFence>());
+                CancelBuffer(in.Pop<i32>(), in.PopFlattenable<AndroidFence>());
                 break;
             }
 
@@ -694,6 +703,12 @@ namespace skyline::service::hosbinder {
             case TransactionCode::SetPreallocatedBuffer: {
                 auto result{SetPreallocatedBuffer(in.Pop<i32>(), in.PopOptionalFlattenable<GraphicBuffer>())};
                 out.Push(result);
+                break;
+            }
+
+            case TransactionCode::GetBufferHistory: {
+                // Unimplemented for now
+                out.Push(AndroidStatus::Ok);
                 break;
             }
 

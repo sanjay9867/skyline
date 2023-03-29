@@ -19,6 +19,7 @@ namespace skyline::service::am {
         std::shared_ptr<kernel::type::KEvent> libraryAppletLaunchableEvent; //!< This KEvent is triggered when the library applet is launchable
         std::shared_ptr<kernel::type::KEvent> accumulatedSuspendedTickChangedEvent; //!< This KEvent is triggered when the time the system has spent in suspend is updated
         std::shared_ptr<hosbinder::IHOSBinderDriver> hosbinder; //!< IHOSBinder service for managed display layers
+        u32 idleTimeDetectionExtension{0};
 
       public:
         ISelfController(const DeviceState &state, ServiceManager &manager);
@@ -46,6 +47,11 @@ namespace skyline::service::am {
          * @url https://switchbrew.org/wiki/Applet_Manager_services#GetLibraryAppletLaunchableEvent
          */
         Result GetLibraryAppletLaunchableEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#SetScreenShotPermission
+         */
+        Result SetScreenShotPermission(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
          * @brief This function takes a u8 bool flag and no output (Stubbed)
@@ -78,10 +84,25 @@ namespace skyline::service::am {
         Result SetOutOfFocusSuspendingEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#SetAlbumImageOrientation
+         */
+        Result SetAlbumImageOrientation(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Returns an output u64 LayerId
          * @url https://switchbrew.org/wiki/Applet_Manager_services#CreateManagedDisplayLayer
          */
         Result CreateManagedDisplayLayer(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#SetIdleTimeDetectionExtension
+         */
+        Result SetIdleTimeDetectionExtension(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetIdleTimeDetectionExtension
+         */
+        Result GetIdleTimeDetectionExtension(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
          * @brief Returns how long the process was suspended for in ticks
@@ -95,19 +116,35 @@ namespace skyline::service::am {
          */
         Result GetAccumulatedSuspendedTickChangedEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        /**
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#SetAlbumImageTakenNotificationEnabled
+         */
+        Result SetAlbumImageTakenNotificationEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#SetRecordVolumeMuted
+         */
+        Result SetRecordVolumeMuted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         SERVICE_DECL(
             SFUNC(0x0, ISelfController, Exit),
             SFUNC(0x1, ISelfController, LockExit),
             SFUNC(0x2, ISelfController, UnlockExit),
             SFUNC(0x9, ISelfController, GetLibraryAppletLaunchableEvent),
+            SFUNC(0xA, ISelfController, SetScreenShotPermission),
             SFUNC(0xB, ISelfController, SetOperationModeChangedNotification),
             SFUNC(0xC, ISelfController, SetPerformanceModeChangedNotification),
             SFUNC(0xD, ISelfController, SetFocusHandlingMode),
             SFUNC(0xE, ISelfController, SetRestartMessageEnabled),
             SFUNC(0x10, ISelfController, SetOutOfFocusSuspendingEnabled),
+            SFUNC(0x13, ISelfController, SetAlbumImageOrientation),
             SFUNC(0x28, ISelfController, CreateManagedDisplayLayer),
+            SFUNC(0x3E, ISelfController, SetIdleTimeDetectionExtension),
+            SFUNC(0x3F, ISelfController, GetIdleTimeDetectionExtension),
             SFUNC(0x5A, ISelfController, GetAccumulatedSuspendedTickValue),
-            SFUNC(0x5B, ISelfController, GetAccumulatedSuspendedTickChangedEvent)
+            SFUNC(0x5B, ISelfController, GetAccumulatedSuspendedTickChangedEvent),
+            SFUNC(0x64, ISelfController, SetAlbumImageTakenNotificationEnabled),
+            SFUNC(0x82, ISelfController, SetRecordVolumeMuted)
         )
     };
 }

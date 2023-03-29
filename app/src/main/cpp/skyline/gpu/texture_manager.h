@@ -4,7 +4,6 @@
 #pragma once
 
 #include "texture/texture.h"
-#include <random>
 
 namespace skyline::gpu {
     /**
@@ -27,7 +26,6 @@ namespace skyline::gpu {
         };
 
         GPU &gpu;
-        std::mutex mutex; //!< Synchronizes access to the texture mappings
         std::vector<TextureMapping> textures; //!< A sorted vector of all texture mappings
 
       public:
@@ -35,7 +33,8 @@ namespace skyline::gpu {
 
         /**
          * @return A pre-existing or newly created Texture object which matches the specified criteria
+         * @note The texture manager **must** be locked prior to calling this
          */
-        TextureView FindOrCreate(const GuestTexture &guestTexture);
+        std::shared_ptr<TextureView> FindOrCreate(const GuestTexture &guestTexture, ContextTag tag = {});
     };
 }

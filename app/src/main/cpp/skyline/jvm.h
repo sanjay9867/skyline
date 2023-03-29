@@ -19,10 +19,60 @@ namespace skyline {
     };
 
     /**
+     * @brief A wrapper over the `Settings` Kotlin class
+     * @note The lifetime of this class must not exceed that of the JNI environment
+     * @note Copy construction of this class is disallowed to avoid issues with the JNI environment lifetime
+     */
+    class KtSettings {
+      private:
+        JNIEnv *env; //!< A pointer to the current jni environment
+        jclass settingsClass; //!< The settings class
+        jobject settingsInstance; //!< The settings instance
+
+      public:
+        KtSettings(JNIEnv *env, jobject settingsInstance) : env(env), settingsInstance(settingsInstance), settingsClass(env->GetObjectClass(settingsInstance)) {}
+
+        KtSettings(const KtSettings &) = delete;
+
+        void operator=(const KtSettings &) = delete;
+
+        KtSettings(KtSettings &&) = default;
+
+        /**
+         * @param key A null terminated string containing the key of the setting to get
+         */
+        template<typename T>
+        requires std::is_integral_v<T> || std::is_enum_v<T>
+        T GetInt(const std::string_view &key) {
+            return static_cast<T>(env->GetIntField(settingsInstance, env->GetFieldID(settingsClass, key.data(), "I")));
+        }
+
+        /**
+         * @param key A null terminated string containing the key of the setting to get
+         */
+        bool GetBool(const std::string_view &key) {
+            return env->GetBooleanField(settingsInstance, env->GetFieldID(settingsClass, key.data(), "Z")) == JNI_TRUE;
+        }
+
+        /**
+         * @param key A null terminated string containing the key of the setting to get
+         */
+        JniString GetString(const std::string_view &key) {
+            return {env, static_cast<jstring>(env->GetObjectField(settingsInstance, env->GetFieldID(settingsClass, key.data(), "Ljava/lang/String;")))};
+        }
+    };
+
+    /**
      * @brief The JvmManager class is used to simplify transactions with the Java component
      */
     class JvmManager {
       public:
+        using KeyboardHandle = jobject;
+        using KeyboardConfig = std::array<u8, 0x4C8>;
+        using KeyboardCloseResult = u32;
+        using KeyboardTextCheckResult = u32;
+
+
         jobject instance; //!< A reference to the activity
         jclass instanceClass; //!< The class of the activity
 
@@ -107,6 +157,26 @@ namespace skyline {
         void ClearVibrationDevice(jint index);
 
         /**
+         * @brief A call to EmulationActivity.showKeyboard in Kotlin
+         */
+        KeyboardHandle ShowKeyboard(KeyboardConfig &config, std::u16string initialText);
+
+        /**
+         * @brief A call to EmulationActivity.waitForSubmitOrCancel in Kotlin
+         */
+        std::pair<KeyboardCloseResult, std::u16string> WaitForSubmitOrCancel(KeyboardHandle dialog);
+
+        /**
+         * @brief A call to EmulationActivity.closeKeyboard in Kotlin
+         */
+        void CloseKeyboard(KeyboardHandle dialog);
+
+        /**
+         * @brief A call to EmulationActivity.showValidationResult in Kotlin
+         */
+        KeyboardCloseResult ShowValidationResult(KeyboardHandle dialog, KeyboardTextCheckResult checkResult, std::u16string message);
+
+        /**
          * @brief A call to EmulationActivity.getVersionCode in Kotlin
          * @return A version code in Vulkan's format with 14-bit patch + 10-bit major and minor components
          */
@@ -116,6 +186,12 @@ namespace skyline {
         jmethodID initializeControllersId;
         jmethodID vibrateDeviceId;
         jmethodID clearVibrationDeviceId;
+        jmethodID showKeyboardId;
+        jmethodID waitForSubmitOrCancelId;
+        jmethodID closeKeyboardId;
+        jmethodID showValidationResultId;
         jmethodID getVersionCodeId;
+
+        jmethodID getIntegerValueId;
     };
 }

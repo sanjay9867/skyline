@@ -3,270 +3,368 @@
 // Copyright © 2018-2020 fincs (https://github.com/devkitPro/deko3d)
 
 #include <boost/preprocessor/repeat.hpp>
-#include "maxwell_3d.h"
+#include <gpu/interconnect/command_executor.h>
+#include <soc/gm20b/channel.h>
 #include <soc.h>
+#include "maxwell/types.h"
+#include "maxwell_3d.h"
 
 namespace skyline::soc::gm20b::engine::maxwell3d {
-    Maxwell3D::Maxwell3D(const DeviceState &state, ChannelContext &channelCtx, gpu::interconnect::CommandExecutor &executor) : Engine(state), macroInterpreter(*this), context(*state.gpu, channelCtx, executor), channelCtx(channelCtx) {
-        ResetRegs();
+    #define REGTYPE(state) gpu::interconnect::maxwell3d::state::EngineRegisters
+
+    static gpu::interconnect::maxwell3d::PipelineState::EngineRegisters MakePipelineStateRegisters(const Maxwell3D::Registers &registers) {
+        return {
+            .pipelineStageRegisters = util::MergeInto<REGTYPE(PipelineStageState), type::PipelineCount>(*registers.pipelines, *registers.programRegion),
+            .colorRenderTargetsRegisters = util::MergeInto<REGTYPE(ColorRenderTargetState), type::ColorTargetCount>(*registers.colorTargets, *registers.surfaceClip),
+            .depthRenderTargetRegisters = {*registers.ztSize, *registers.ztOffset, *registers.ztFormat, *registers.ztBlockSize, *registers.ztArrayPitch, *registers.ztSelect, *registers.ztLayer, *registers.surfaceClip},
+            .vertexInputRegisters = {*registers.vertexStreams, *registers.vertexStreamInstance, *registers.vertexAttributes},
+            .inputAssemblyRegisters = {*registers.primitiveRestartEnable},
+            .tessellationRegisters = {*registers.patchSize, *registers.tessellationParameters},
+            .rasterizationRegisters = {*registers.rasterEnable, *registers.frontPolygonMode, *registers.backPolygonMode, *registers.oglCullEnable, *registers.oglCullFace, *registers.windowOrigin, *registers.oglFrontFace, *registers.viewportClipControl, *registers.polyOffset, *registers.provokingVertex, *registers.pointSize, *registers.zClipRange},
+            .depthStencilRegisters = {*registers.depthTestEnable, *registers.depthWriteEnable, *registers.depthFunc, *registers.depthBoundsTestEnable, *registers.stencilTestEnable, *registers.twoSidedStencilTestEnable, *registers.stencilOps, *registers.stencilBack, *registers.alphaTestEnable, *registers.alphaFunc, *registers.alphaRef},
+            .colorBlendRegisters = {*registers.logicOp, *registers.singleCtWriteControl, *registers.ctWrites, *registers.blendStatePerTargetEnable, *registers.blendPerTargets, *registers.blend},
+            .transformFeedbackRegisters = {*registers.streamOutputEnable, *registers.streamOutControls, *registers.streamOutLayoutSelect},
+            .globalShaderConfigRegisters = {*registers.postVtgShaderAttributeSkipMask, *registers.bindlessTexture, *registers.apiMandatedEarlyZEnable, *registers.viewportScaleOffsetEnable},
+            .ctSelect = *registers.ctSelect
+        };
     }
 
-    void Maxwell3D::ResetRegs() {
-        registers = {};
-
-        registers.rasterizerEnable = true;
-
-        for (auto &transform : *registers.viewportTransforms) {
-            transform.swizzles.x = type::ViewportTransform::Swizzle::PositiveX;
-            transform.swizzles.y = type::ViewportTransform::Swizzle::PositiveY;
-            transform.swizzles.z = type::ViewportTransform::Swizzle::PositiveZ;
-            transform.swizzles.w = type::ViewportTransform::Swizzle::PositiveW;
-        }
-
-        for (auto &viewport : *registers.viewports) {
-            viewport.depthRangeFar = 1.0f;
-            viewport.depthRangeNear = 0.0f;
-        }
-
-        registers.polygonMode->front = type::PolygonMode::Fill;
-        registers.polygonMode->back = type::PolygonMode::Fill;
-
-        registers.stencilFront->failOp = registers.stencilFront->zFailOp = registers.stencilFront->zPassOp = type::StencilOp::Keep;
-        registers.stencilFront->compare.op = type::CompareOp::Always;
-        registers.stencilFront->compare.mask = 0xFFFFFFFF;
-        registers.stencilFront->writeMask = 0xFFFFFFFF;
-
-        registers.stencilTwoSideEnable = true;
-        registers.stencilBack->failOp = registers.stencilBack->zFailOp = registers.stencilBack->zPassOp = type::StencilOp::Keep;
-        registers.stencilBack->compareOp = type::CompareOp::Always;
-        registers.stencilBackExtra->compareMask = 0xFFFFFFFF;
-        registers.stencilBackExtra->writeMask = 0xFFFFFFFF;
-
-        registers.rtSeparateFragData = true;
-
-        for (auto &attribute : *registers.vertexAttributeState)
-            attribute.fixed = true;
-
-        registers.depthTestFunc = type::CompareOp::Always;
-
-        registers.blendState->colorOp = registers.blendState->alphaOp = type::Blend::Op::Add;
-        registers.blendState->colorSrcFactor = registers.blendState->alphaSrcFactor = type::Blend::Factor::One;
-        registers.blendState->colorDestFactor = registers.blendState->alphaDestFactor = type::Blend::Factor::Zero;
-
-        registers.lineWidthSmooth = 1.0f;
-        registers.lineWidthAliased = 1.0f;
-
-        registers.pointSpriteEnable = true;
-        registers.pointSpriteSize = 1.0f;
-        registers.pointCoordReplace->enable = true;
-
-        registers.frontFace = type::FrontFace::CounterClockwise;
-        registers.cullFace = type::CullFace::Back;
-
-        for (auto &mask : *registers.colorMask)
-            mask.r = mask.g = mask.b = mask.a = 1;
-
-        for (auto &blend : *registers.independentBlend) {
-            blend.colorOp = blend.alphaOp = type::Blend::Op::Add;
-            blend.colorSrcFactor = blend.alphaSrcFactor = type::Blend::Factor::One;
-            blend.colorDestFactor = blend.alphaDestFactor = type::Blend::Factor::Zero;
-        }
-
-        registers.viewportTransformEnable = true;
+    static gpu::interconnect::maxwell3d::ActiveState::EngineRegisters MakeActiveStateRegisters(const Maxwell3D::Registers &registers) {
+        return {
+            .pipelineRegisters = MakePipelineStateRegisters(registers),
+            .vertexBuffersRegisters = util::MergeInto<REGTYPE(VertexBufferState), type::VertexStreamCount>(*registers.vertexStreams, *registers.vertexStreamLimits),
+            .indexBufferRegisters = {*registers.indexBuffer},
+            .transformFeedbackBuffersRegisters = util::MergeInto<REGTYPE(TransformFeedbackBufferState), type::StreamOutBufferCount>(*registers.streamOutBuffers, *registers.streamOutputEnable),
+            .viewportsRegisters = util::MergeInto<REGTYPE(ViewportState), type::ViewportCount>(registers.viewports[0], registers.viewportClips[0], *registers.viewports, *registers.viewportClips, *registers.windowOrigin, *registers.viewportScaleOffsetEnable, *registers.surfaceClip),
+            .scissorsRegisters = util::MergeInto<REGTYPE(ScissorState), type::ViewportCount>(*registers.scissors),
+            .lineWidthRegisters = {*registers.lineWidth, *registers.lineWidthAliased, *registers.aliasedLineWidthEnable},
+            .depthBiasRegisters = {*registers.depthBias, *registers.depthBiasClamp, *registers.slopeScaleDepthBias},
+            .blendConstantsRegisters = {*registers.blendConsts},
+            .depthBoundsRegisters = {*registers.depthBoundsMin, *registers.depthBoundsMax},
+            .stencilValuesRegisters = {*registers.stencilValues, *registers.backStencilValues, *registers.twoSidedStencilTestEnable},
+        };
     }
 
-    void Maxwell3D::CallMethod(u32 method, u32 argument, bool lastCall) {
-        Logger::Debug("Called method in Maxwell 3D: 0x{:X} args: 0x{:X}", method, argument);
+    static gpu::interconnect::maxwell3d::Maxwell3D::EngineRegisterBundle MakeEngineRegisters(const Maxwell3D::Registers &registers) {
+        return {
+            .activeStateRegisters = MakeActiveStateRegisters(registers),
+            .clearRegisters = {registers.scissors[0], registers.viewportClips[0], *registers.clearRect, *registers.colorClearValue, *registers.zClearValue, *registers.stencilClearValue, *registers.surfaceClip, *registers.clearSurfaceControl},
+            .constantBufferSelectorRegisters = {*registers.constantBufferSelector},
+            .samplerPoolRegisters = {*registers.texSamplerPool, *registers.texHeaderPool},
+            .samplerBinding = *registers.samplerBinding,
+            .texturePoolRegisters = {*registers.texHeaderPool}
+        };
+    }
+    #undef REGTYPE
 
-        // Methods that are greater than the register size are for macro control
-        if (method >= RegisterCount) [[unlikely]] {
-            // Starting a new macro at index 'method - RegisterCount'
-            if (!(method & 1)) {
-                if (macroInvocation.index != -1) {
-                    // Flush the current macro as we are switching to another one
-                    macroInterpreter.Execute(macroPositions[static_cast<size_t>(macroInvocation.index)], macroInvocation.arguments);
-                    macroInvocation.arguments.clear();
-                }
+    type::DrawTopology Maxwell3D::ApplyTopologyOverride(type::DrawTopology beginMethodTopology) {
+        return registers.primitiveTopologyControl->override == type::PrimitiveTopologyControl::Override::UseTopologyInBeginMethods ?
+               beginMethodTopology : type::ConvertPrimitiveTopologyToDrawTopology(*registers.primitiveTopology);
+    }
 
-                // Setup for the new macro index
-                macroInvocation.index = ((method - RegisterCount) >> 1) % macroPositions.size();
-            }
+    Maxwell3D::Maxwell3D(const DeviceState &state, ChannelContext &channelCtx, MacroState &macroState)
+        : MacroEngineBase{macroState},
+          syncpoints{state.soc->host1x.syncpoints},
+          i2m{state, channelCtx},
+          dirtyManager{registers},
+          interconnect{*state.gpu, channelCtx, *state.nce, state.process->memory, dirtyManager, MakeEngineRegisters(registers)},
+          channelCtx{channelCtx} {
+        channelCtx.executor.AddFlushCallback([this]() { FlushEngineState(); });
+        InitializeRegisters();
+    }
 
-            macroInvocation.arguments.emplace_back(argument);
+    __attribute__((always_inline)) void Maxwell3D::FlushDeferredDraw() {
+        if (batchEnableState.drawActive) {
+            batchEnableState.drawActive = false;
+            interconnect.Draw(deferredDraw.drawTopology, *registers.streamOutputEnable, deferredDraw.indexed, deferredDraw.drawCount, deferredDraw.drawFirst, deferredDraw.instanceCount, deferredDraw.drawBaseVertex, deferredDraw.drawBaseInstance);
+            deferredDraw.instanceCount = 1;
+        }
+    }
 
-            // Flush macro after all of the data in the method call has been sent
-            if (lastCall && macroInvocation.index != -1) {
-                macroInterpreter.Execute(macroPositions[static_cast<size_t>(macroInvocation.index)], macroInvocation.arguments);
-                macroInvocation.arguments.clear();
-                macroInvocation.index = -1;
-            }
-
-            // Bail out early
+    __attribute__((always_inline)) void Maxwell3D::HandleMethod(u32 method, u32 argument) {
+        if (method == ENGINE_STRUCT_OFFSET(mme, shadowRamControl)) [[unlikely]] {
+            shadowRegisters.raw[method] = registers.raw[method] = argument;
             return;
         }
 
-        #define MAXWELL3D_OFFSET(field) (sizeof(typeof(Registers::field)) - sizeof(typeof(*Registers::field))) / sizeof(u32)
-        #define MAXWELL3D_STRUCT_OFFSET(field, member) MAXWELL3D_OFFSET(field) + U32_OFFSET(typeof(*Registers::field), member)
-        #define MAXWELL3D_ARRAY_OFFSET(field, index) MAXWELL3D_OFFSET(field) + ((sizeof(typeof(Registers::field[0])) / sizeof(u32)) * index)
-        #define MAXWELL3D_ARRAY_STRUCT_OFFSET(field, index, member) MAXWELL3D_ARRAY_OFFSET(field, index) + U32_OFFSET(typeof(Registers::field[0]), member)
-        #define MAXWELL3D_ARRAY_STRUCT_STRUCT_OFFSET(field, index, member, submember) MAXWELL3D_ARRAY_STRUCT_OFFSET(field, index, member) + U32_OFFSET(typeof(Registers::field[0].member), submember)
+        if (shadowRegisters.mme->shadowRamControl == type::MmeShadowRamControl::MethodTrack || shadowRegisters.mme->shadowRamControl == type::MmeShadowRamControl::MethodTrackWithFilter) [[unlikely]]
+            shadowRegisters.raw[method] = argument;
+        else if (shadowRegisters.mme->shadowRamControl == type::MmeShadowRamControl::MethodReplay) [[unlikely]]
+            argument = shadowRegisters.raw[method];
 
-        #define MAXWELL3D_CASE(field, content) case MAXWELL3D_OFFSET(field): { \
-            auto field{util::BitCast<typeof(*registers.field)>(argument)};     \
-            content                                                            \
-            return;                                                            \
-        }
-        #define MAXWELL3D_CASE_BASE(fieldName, fieldAccessor, offset, content) case offset: { \
-            auto fieldName{util::BitCast<typeof(registers.fieldAccessor)>(argument)};         \
-            content                                                                           \
-            return;                                                                           \
-        }
-        #define MAXWELL3D_STRUCT_CASE(field, member, content) MAXWELL3D_CASE_BASE(member, field->member, MAXWELL3D_STRUCT_OFFSET(field, member), content)
-        #define MAXWELL3D_ARRAY_CASE(field, index, content) MAXWELL3D_CASE_BASE(field, field[index], MAXWELL3D_ARRAY_OFFSET(field, index), content)
-        #define MAXWELL3D_ARRAY_STRUCT_CASE(field, index, member, content) MAXWELL3D_CASE_BASE(member, field[index].member, MAXWELL3D_ARRAY_STRUCT_OFFSET(field, index, member), content)
-        #define MAXWELL3D_ARRAY_STRUCT_STRUCT_CASE(field, index, member, submember, content) MAXWELL3D_CASE_BASE(submember, field[index].member.submember, MAXWELL3D_ARRAY_STRUCT_STRUCT_OFFSET(field, index, member, submember), content)
-
-        if (method != MAXWELL3D_STRUCT_OFFSET(mme, shadowRamControl)) {
-            if (shadowRegisters.mme->shadowRamControl == type::MmeShadowRamControl::MethodTrack || shadowRegisters.mme->shadowRamControl == type::MmeShadowRamControl::MethodTrackWithFilter)
-                shadowRegisters.raw[method] = argument;
-            else if (shadowRegisters.mme->shadowRamControl == type::MmeShadowRamControl::MethodReplay)
-                argument = shadowRegisters.raw[method];
-        }
 
         bool redundant{registers.raw[method] == argument};
+        u32 origRegisterValue{registers.raw[method]};
         registers.raw[method] = argument;
 
-        if (!redundant) {
-            switch (method) {
-                MAXWELL3D_STRUCT_CASE(mme, shadowRamControl, {
-                    shadowRegisters.mme->shadowRamControl = shadowRamControl;
-                })
+        if (batchEnableState.raw) {
+            if (batchEnableState.constantBufferActive) {
+                switch (method) {
+                    // Add to the batch constant buffer update buffer
+                    // Return early here so that any code below can rely on the fact that any cbuf updates will always be the first of a batch
+                    #define LOAD_CONSTANT_BUFFER_CALLBACKS(z, index, data_)                \
+                    ENGINE_STRUCT_ARRAY_CASE(loadConstantBuffer, data, index, { \
+                        batchLoadConstantBuffer.buffer.push_back(argument);         \
+                        registers.loadConstantBuffer->offset += 4;              \
+                        return;                                                   \
+                    })
 
-                #define RENDER_TARGET_ARRAY(z, index, data)                               \
-                MAXWELL3D_ARRAY_STRUCT_STRUCT_CASE(renderTargets, index, address, high, { \
-                    context.SetRenderTargetAddressHigh(index, high);                      \
-                })                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_STRUCT_CASE(renderTargets, index, address, low, {  \
-                    context.SetRenderTargetAddressLow(index, low);                        \
-                })                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(renderTargets, index, width, {                \
-                    context.SetRenderTargetWidth(index, width);                           \
-                })                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(renderTargets, index, height, {               \
-                    context.SetRenderTargetHeight(index, height);                         \
-                })                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(renderTargets, index, format, {               \
-                    context.SetRenderTargetFormat(index, format);                         \
-                })                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(renderTargets, index, tileMode, {             \
-                    context.SetRenderTargetTileMode(index, tileMode);                     \
-                })                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(renderTargets, index, arrayMode, {            \
-                    context.SetRenderTargetArrayMode(index, arrayMode);                   \
-                })                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(renderTargets, index, layerStrideLsr2, {      \
-                    context.SetRenderTargetLayerStride(index, layerStrideLsr2);           \
-                })                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(renderTargets, index, baseLayer, {            \
-                    context.SetRenderTargetBaseLayer(index, baseLayer);                   \
-                })
+                    BOOST_PP_REPEAT(16, LOAD_CONSTANT_BUFFER_CALLBACKS, 0)
+                    #undef LOAD_CONSTANT_BUFFER_CALLBACKS
+                    default:
+                        // When a method other than constant buffer update is called submit our submit the previously built-up update as a batch
+                        registers.raw[method] = origRegisterValue;
+                        interconnect.DisableQuickConstantBufferBind();
+                        interconnect.LoadConstantBuffer(batchLoadConstantBuffer.buffer, batchLoadConstantBuffer.startOffset);
+                        batchEnableState.constantBufferActive = false;
+                        batchLoadConstantBuffer.Reset();
+                        registers.raw[method] = argument;
+                        break; // Continue on here to handle the actual method
+                }
+            } else if (batchEnableState.drawActive) { // See DeferredDrawState comment for full details
+                switch (method) {
+                    ENGINE_CASE(begin, {
+                        if (begin.instanceId == Registers::Begin::InstanceId::Subsequent) {
+                            if (deferredDraw.drawTopology != begin.op &&
+                                registers.primitiveTopologyControl->override == type::PrimitiveTopologyControl::Override::UseTopologyInBeginMethods)
+                                Logger::Warn("Vertex topology changed partway through instanced draw!");
 
-                BOOST_PP_REPEAT(8, RENDER_TARGET_ARRAY, 0)
-                static_assert(type::RenderTargetCount == 8 && type::RenderTargetCount < BOOST_PP_LIMIT_REPEAT);
-                #undef RENDER_TARGET_ARRAY
+                            deferredDraw.instanceCount++;
+                        } else {
+                            FlushDeferredDraw();
+                            break; // This instanced draw is finished, continue on to handle the next draw
+                        }
 
-                #define VIEWPORT_TRANSFORM_CALLBACKS(z, index, data)                                      \
-                MAXWELL3D_ARRAY_STRUCT_CASE(viewportTransforms, index, scaleX, {                          \
-                    context.SetViewportX(index, scaleX, registers.viewportTransforms[index].translateX);  \
-                })                                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(viewportTransforms, index, translateX, {                      \
-                    context.SetViewportX(index, registers.viewportTransforms[index].scaleX, translateX);  \
-                })                                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(viewportTransforms, index, scaleY, {                          \
-                    context.SetViewportY(index, scaleY, registers.viewportTransforms[index].translateY);  \
-                })                                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(viewportTransforms, index, translateY, {                      \
-                    context.SetViewportY(index, registers.viewportTransforms[index].scaleY, translateY);  \
-                })                                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(viewportTransforms, index, scaleZ, {                          \
-                    context.SetViewportZ(index, scaleZ, registers.viewportTransforms[index].translateZ);  \
-                })                                                                                        \
-                MAXWELL3D_ARRAY_STRUCT_CASE(viewportTransforms, index, translateZ, {                      \
-                    context.SetViewportZ(index, registers.viewportTransforms[index].scaleZ, translateZ);  \
-                })
+                        return;
+                    })
 
-                BOOST_PP_REPEAT(16, VIEWPORT_TRANSFORM_CALLBACKS, 0)
-                static_assert(type::ViewportCount == 16 && type::ViewportCount < BOOST_PP_LIMIT_REPEAT);
-                #undef VIEWPORT_TRANSFORM_CALLBACKS
+                    // Can be ignored since we handle drawing in draw{Vertex,Index}Count
+                    ENGINE_CASE(end, { return; })
 
-                #define COLOR_CLEAR_CALLBACKS(z, index, data)              \
-                MAXWELL3D_ARRAY_CASE(clearColorValue, index, {             \
-                    context.UpdateClearColorValue(index, clearColorValue); \
-                })
+                    // Draws here can be ignored since they're just repeats of the original instanced draw
+                    ENGINE_CASE(drawVertexArray, {
+                        if (!redundant)
+                            Logger::Warn("Vertex count changed partway through instanced draw!");
+                        return;
+                    })
+                    ENGINE_CASE(drawIndexBuffer, {
+                        if (!redundant)
+                            Logger::Warn("Index count changed partway through instanced draw!");
+                        return;
+                    })
 
-                BOOST_PP_REPEAT(4, COLOR_CLEAR_CALLBACKS, 0)
-                static_assert(4 < BOOST_PP_LIMIT_REPEAT);
-                #undef COLOR_CLEAR_CALLBACKS
+                    ENGINE_CASE(drawVertexArrayBeginEndInstanceSubsequent, {
+                        deferredDraw.instanceCount++;
+                        return;
+                    })
 
-                #define SCISSOR_CALLBACKS(z, index, data)                                                           \
-                MAXWELL3D_ARRAY_STRUCT_CASE(scissors, index, enable, {                                              \
-                    context.SetScissor(index, enable ? registers.scissors[index] : std::optional<type::Scissor>{}); \
-                })                                                                                                  \
-                MAXWELL3D_ARRAY_STRUCT_CASE(scissors, index, horizontal, {                                          \
-                    context.SetScissorHorizontal(index, horizontal);                                                \
-                })                                                                                                  \
-                MAXWELL3D_ARRAY_STRUCT_CASE(scissors, index, vertical, {                                            \
-                    context.SetScissorVertical(index, vertical);                                                    \
-                })
+                    ENGINE_CASE(drawIndexBuffer32BeginEndInstanceSubsequent, {
+                        deferredDraw.instanceCount++;
+                        return;
+                    })
 
-                BOOST_PP_REPEAT(16, SCISSOR_CALLBACKS, 0)
-                static_assert(type::ViewportCount == 16 && type::ViewportCount < BOOST_PP_LIMIT_REPEAT);
-                #undef SCISSOR_CALLBACKS
+                    ENGINE_CASE(drawIndexBuffer16BeginEndInstanceSubsequent, {
+                        deferredDraw.instanceCount++;
+                        return;
+                    })
 
-                MAXWELL3D_CASE(renderTargetControl, {
-                    context.UpdateRenderTargetControl(renderTargetControl);
-                })
+                    ENGINE_CASE(drawIndexBuffer8BeginEndInstanceSubsequent, {
+                        deferredDraw.instanceCount++;
+                        return;
+                    })
+
+                    // Once we stop calling draw methods flush the current draw since drawing is dependent on the register state not changing
+                    default:
+                        registers.raw[method] = origRegisterValue;
+                        FlushDeferredDraw();
+                        registers.raw[method] = argument;
+                        break;
+                }
             }
         }
 
+        if (!redundant)
+            dirtyManager.MarkDirty(method);
+
         switch (method) {
-            MAXWELL3D_STRUCT_CASE(mme, instructionRamLoad, {
-                if (registers.mme->instructionRamPointer >= macroCode.size())
+            ENGINE_STRUCT_CASE(mme, instructionRamLoad, {
+                if (registers.mme->instructionRamPointer >= macroState.macroCode.size())
                     throw exception("Macro memory is full!");
 
-                macroCode[registers.mme->instructionRamPointer++] = instructionRamLoad;
+                macroState.macroCode[registers.mme->instructionRamPointer++] = instructionRamLoad;
+                macroState.Invalidate();
 
                 // Wraparound writes
-                registers.mme->instructionRamPointer %= macroCode.size();
+                // This works on HW but will also generate an error interrupt
+                registers.mme->instructionRamPointer %= macroState.macroCode.size();
             })
 
-            MAXWELL3D_STRUCT_CASE(mme, startAddressRamLoad, {
-                if (registers.mme->startAddressRamPointer >= macroPositions.size())
+            ENGINE_STRUCT_CASE(mme, startAddressRamLoad, {
+                if (registers.mme->startAddressRamPointer >= macroState.macroPositions.size())
                     throw exception("Maximum amount of macros reached!");
 
-                macroPositions[registers.mme->startAddressRamPointer++] = startAddressRamLoad;
+                macroState.macroPositions[registers.mme->startAddressRamPointer++] = startAddressRamLoad;
+                macroState.Invalidate();
             })
 
-            MAXWELL3D_CASE(syncpointAction, {
+            ENGINE_STRUCT_CASE(i2m, launchDma, {
+                FlushEngineState();
+                i2m.LaunchDma(*registers.i2m);
+            })
+
+            ENGINE_STRUCT_CASE(i2m, loadInlineData, {
+                i2m.LoadInlineData(*registers.i2m, loadInlineData);
+            })
+
+            ENGINE_CASE(syncpointAction, {
                 Logger::Debug("Increment syncpoint: {}", static_cast<u16>(syncpointAction.id));
-                channelCtx.executor.Execute();
-                state.soc->host1x.syncpoints.at(syncpointAction.id).Increment();
+                channelCtx.executor.Submit([=, syncpoints = &this->syncpoints, index = syncpointAction.id]() {
+                    syncpoints->at(index).host.Increment();
+                });
+                syncpoints.at(syncpointAction.id).guest.Increment();
             })
 
-            MAXWELL3D_CASE(clearBuffers, {
-                context.ClearBuffers(clearBuffers);
+            ENGINE_CASE(clearSurface, {
+                interconnect.Clear(clearSurface);
             })
 
-            MAXWELL3D_STRUCT_CASE(semaphore, info, {
+            ENGINE_CASE(begin, {
+                // If we reach here then we aren't in a deferred draw so theres no need to flush anything
+                if (begin.instanceId == Registers::Begin::InstanceId::Subsequent)
+                    deferredDraw.instanceCount++;
+                else
+                    deferredDraw.instanceCount = 1;
+            })
+
+            ENGINE_STRUCT_CASE(drawVertexArray, count, {
+                // Defer the draw until the first non-draw operation to allow for detecting instanced draws (see DeferredDrawState comment)
+                deferredDraw.Set(count, *registers.vertexArrayStart, 0,
+                                 *registers.globalBaseInstanceIndex,
+                                 ApplyTopologyOverride(registers.begin->op),
+                                 false);
+                batchEnableState.drawActive = true;
+            })
+
+            ENGINE_CASE(drawVertexArrayBeginEndInstanceFirst, {
+                deferredDraw.Set(drawVertexArrayBeginEndInstanceFirst.count, drawVertexArrayBeginEndInstanceFirst.startIndex, 0,
+                                 *registers.globalBaseInstanceIndex,
+                                 ApplyTopologyOverride(drawVertexArrayBeginEndInstanceFirst.topology),
+                                 false);
+                deferredDraw.instanceCount = 1;
+                batchEnableState.drawActive = true;
+            })
+
+            ENGINE_CASE(drawVertexArrayBeginEndInstanceSubsequent, {
+                deferredDraw.Set(drawVertexArrayBeginEndInstanceSubsequent.count, drawVertexArrayBeginEndInstanceSubsequent.startIndex, 0,
+                                 *registers.globalBaseInstanceIndex,
+                                 ApplyTopologyOverride(drawVertexArrayBeginEndInstanceSubsequent.topology),
+                                 false);
+                deferredDraw.instanceCount++;
+                batchEnableState.drawActive = true;
+            })
+
+            ENGINE_STRUCT_CASE(drawInlineIndex4X8, index0, {
+                throw exception("drawInlineIndex4X8 not implemented!");
+            })
+
+            ENGINE_STRUCT_CASE(drawInlineIndex2X16, even, {
+                throw exception("drawInlineIndex2X16 not implemented!");
+            })
+
+            ENGINE_STRUCT_CASE(drawZeroIndex, count, {
+                throw exception("drawZeroIndex not implemented!");
+            })
+
+            ENGINE_STRUCT_CASE(drawAuto, byteCount, {
+                throw exception("drawAuto not implemented!");
+            })
+
+            ENGINE_CASE(drawInlineIndex, {
+                throw exception("drawInlineIndex not implemented!");
+            })
+
+            ENGINE_STRUCT_CASE(drawIndexBuffer, count, {
+                // Defer the draw until the first non-draw operation to allow for detecting instanced draws (see DeferredDrawState comment)
+                deferredDraw.Set(count, registers.indexBuffer->first,
+                                 *registers.globalBaseVertexIndex, *registers.globalBaseInstanceIndex,
+                                 ApplyTopologyOverride(registers.begin->op),
+                                 true);
+                batchEnableState.drawActive = true;
+            })
+
+            ENGINE_CASE(drawIndexBuffer32BeginEndInstanceFirst, {
+                deferredDraw.Set(drawIndexBuffer32BeginEndInstanceFirst.count, drawIndexBuffer32BeginEndInstanceFirst.first,
+                                 *registers.globalBaseVertexIndex, *registers.globalBaseInstanceIndex,
+                                 ApplyTopologyOverride(drawIndexBuffer32BeginEndInstanceFirst.topology),
+                                 true);
+                deferredDraw.instanceCount = 1;
+                batchEnableState.drawActive = true;
+            })
+
+            ENGINE_CASE(drawIndexBuffer16BeginEndInstanceFirst, {
+                deferredDraw.Set(drawIndexBuffer16BeginEndInstanceFirst.count, drawIndexBuffer16BeginEndInstanceFirst.first,
+                                 *registers.globalBaseVertexIndex, *registers.globalBaseInstanceIndex,
+                                 ApplyTopologyOverride(drawIndexBuffer16BeginEndInstanceFirst.topology),
+                                 true);
+                deferredDraw.instanceCount = 1;
+                batchEnableState.drawActive = true;
+            })
+
+            ENGINE_CASE(drawIndexBuffer8BeginEndInstanceFirst, {
+                deferredDraw.Set(drawIndexBuffer8BeginEndInstanceFirst.count, drawIndexBuffer8BeginEndInstanceFirst.first,
+                                 *registers.globalBaseVertexIndex, *registers.globalBaseInstanceIndex,
+                                 ApplyTopologyOverride(drawIndexBuffer8BeginEndInstanceFirst.topology),
+                                 true);
+                deferredDraw.instanceCount = 1;
+                batchEnableState.drawActive = true;
+            })
+
+            ENGINE_CASE(drawIndexBuffer32BeginEndInstanceSubsequent, {
+                deferredDraw.Set(drawIndexBuffer32BeginEndInstanceSubsequent.count, drawIndexBuffer32BeginEndInstanceSubsequent.first,
+                                 *registers.globalBaseVertexIndex, *registers.globalBaseInstanceIndex,
+                                 ApplyTopologyOverride(drawIndexBuffer32BeginEndInstanceSubsequent.topology),
+                                 true);
+                deferredDraw.instanceCount++;
+                batchEnableState.drawActive = true;
+            })
+
+            ENGINE_CASE(drawIndexBuffer16BeginEndInstanceSubsequent, {
+                deferredDraw.Set(drawIndexBuffer16BeginEndInstanceSubsequent.count, drawIndexBuffer16BeginEndInstanceSubsequent.first,
+                                 *registers.globalBaseVertexIndex, *registers.globalBaseInstanceIndex,
+                                 ApplyTopologyOverride(drawIndexBuffer16BeginEndInstanceSubsequent.topology),
+                                 true);
+                deferredDraw.instanceCount++;
+                batchEnableState.drawActive = true;
+            })
+
+            ENGINE_CASE(drawIndexBuffer8BeginEndInstanceSubsequent, {
+                deferredDraw.Set(drawIndexBuffer8BeginEndInstanceSubsequent.count, drawIndexBuffer8BeginEndInstanceSubsequent.first,
+                                 *registers.globalBaseVertexIndex, *registers.globalBaseInstanceIndex,
+                                 ApplyTopologyOverride(drawIndexBuffer8BeginEndInstanceSubsequent.topology),
+                                 true);
+                deferredDraw.instanceCount++;
+                batchEnableState.drawActive = true;
+            })
+
+            ENGINE_STRUCT_CASE(semaphore, info, {
+                if (info.reductionEnable)
+                    Logger::Warn("Semaphore reduction is unimplemented!");
+
                 switch (info.op) {
                     case type::SemaphoreInfo::Op::Release:
-                        WriteSemaphoreResult(registers.semaphore->payload);
+                        channelCtx.executor.Submit([=, this, semaphore = *registers.semaphore]() {
+                            WriteSemaphoreResult(semaphore, semaphore.payload);
+                        });
                         break;
 
                     case type::SemaphoreInfo::Op::Counter: {
                         switch (info.counterType) {
                             case type::SemaphoreInfo::CounterType::Zero:
-                                WriteSemaphoreResult(0);
+                                WriteSemaphoreResult(*registers.semaphore, registers.semaphore->payload);
+                                break;
+                            case type::SemaphoreInfo::CounterType::SamplesPassed:
+                                // Return a fake result for now
+                                WriteSemaphoreResult(*registers.semaphore, 0xffffff);
                                 break;
 
                             default:
@@ -282,51 +380,124 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                 }
             })
 
-            MAXWELL3D_ARRAY_CASE(firmwareCall, 4, {
+            ENGINE_ARRAY_CASE(firmwareCall, 4, {
                 registers.raw[0xD00] = 1;
             })
 
+            ENGINE_CASE(invalidateSamplerCacheAll, {
+                channelCtx.executor.Submit();
+            })
+
+            ENGINE_CASE(invalidateTextureHeaderCacheAll, {
+                channelCtx.executor.Submit();
+            })
+
+            // Begin a batch constant buffer update, this case will never be reached if a batch update is currently active
+            #define LOAD_CONSTANT_BUFFER_CALLBACKS(z, index, data_)                                      \
+            ENGINE_STRUCT_ARRAY_CASE(loadConstantBuffer, data, index, {                       \
+                batchLoadConstantBuffer.startOffset = registers.loadConstantBuffer->offset;              \
+                batchLoadConstantBuffer.buffer.push_back(data);                                          \
+                batchEnableState.constantBufferActive = true;                                        \
+                registers.loadConstantBuffer->offset += 4;                                    \
+            })
+
+            BOOST_PP_REPEAT(16, LOAD_CONSTANT_BUFFER_CALLBACKS, 0)
+            #undef LOAD_CONSTANT_BUFFER_CALLBACKS
+
+            #define PIPELINE_CALLBACKS(z, idx, data)                                                                                         \
+                ENGINE_ARRAY_STRUCT_CASE(bindGroups, idx, constantBuffer, {                                                                  \
+                    interconnect.BindConstantBuffer(static_cast<type::ShaderStage>(idx), constantBuffer.shaderSlot, constantBuffer.valid);   \
+                })
+
+            BOOST_PP_REPEAT(5, PIPELINE_CALLBACKS, 0)
+            static_assert(type::ShaderStageCount == 5 && type::ShaderStageCount < BOOST_PP_LIMIT_REPEAT);
+            #undef PIPELINE_CALLBACKS
             default:
                 break;
         }
-
-        #undef MAXWELL3D_OFFSET
-        #undef MAXWELL3D_STRUCT_OFFSET
-        #undef MAXWELL3D_ARRAY_OFFSET
-        #undef MAXWELL3D_ARRAY_STRUCT_OFFSET
-        #undef MAXWELL3D_ARRAY_STRUCT_STRUCT_OFFSET
-
-        #undef MAXWELL3D_CASE_BASE
-        #undef MAXWELL3D_CASE
-        #undef MAXWELL3D_STRUCT_CASE
-        #undef MAXWELL3D_ARRAY_CASE
-        #undef MAXWELL3D_ARRAY_STRUCT_CASE
-        #undef MAXWELL3D_ARRAY_STRUCT_STRUCT_CASE
     }
 
-    void Maxwell3D::WriteSemaphoreResult(u64 result) {
-        struct FourWordResult {
-            u64 value;
-            u64 timestamp;
-        };
-
-        switch (registers.semaphore->info.structureSize) {
+    void Maxwell3D::WriteSemaphoreResult(const Registers::Semaphore &semaphore, u64 result) {
+        switch (semaphore.info.structureSize) {
             case type::SemaphoreInfo::StructureSize::OneWord:
-                channelCtx.asCtx->gmmu.Write<u32>(registers.semaphore->address.Pack(), static_cast<u32>(result));
+                channelCtx.asCtx->gmmu.Write(semaphore.address, static_cast<u32>(result));
+                Logger::Debug("address: 0x{:X} payload: {}", semaphore.address, result);
                 break;
 
             case type::SemaphoreInfo::StructureSize::FourWords: {
-                // Convert the current nanosecond time to GPU ticks
-                constexpr i64 NsToTickNumerator{384};
-                constexpr i64 NsToTickDenominator{625};
+                // Write timestamp first to ensure correct ordering
+                u64 timestamp{GetGpuTimeTicks()};
+                channelCtx.asCtx->gmmu.Write(semaphore.address + 8, timestamp);
+                channelCtx.asCtx->gmmu.Write(semaphore.address, result);
+                Logger::Debug("address: 0x{:X} payload: {} timestamp: {}", semaphore.address, result, timestamp);
 
-                i64 nsTime{util::GetTimeNs()};
-                i64 timestamp{(nsTime / NsToTickDenominator) * NsToTickNumerator + ((nsTime % NsToTickDenominator) * NsToTickNumerator) / NsToTickDenominator};
-
-                channelCtx.asCtx->gmmu.Write<FourWordResult>(registers.semaphore->address.Pack(),
-                                                             FourWordResult{result, static_cast<u64>(timestamp)});
                 break;
             }
         }
     }
+
+    void Maxwell3D::FlushEngineState() {
+        FlushDeferredDraw();
+
+        if (batchEnableState.constantBufferActive) {
+            interconnect.LoadConstantBuffer(batchLoadConstantBuffer.buffer, batchLoadConstantBuffer.startOffset);
+            batchEnableState.constantBufferActive = false;
+            batchLoadConstantBuffer.Reset();
+        }
+
+        interconnect.DisableQuickConstantBufferBind();
+    }
+
+    __attribute__((always_inline)) void Maxwell3D::CallMethod(u32 method, u32 argument) {
+        Logger::Verbose("Called method in Maxwell 3D: 0x{:X} args: 0x{:X}", method, argument);
+
+        HandleMethod(method, argument);
+    }
+
+    void Maxwell3D::CallMethodBatchNonInc(u32 method, span<u32> arguments) {
+        switch (method) {
+            case ENGINE_STRUCT_OFFSET(i2m, loadInlineData):
+                i2m.LoadInlineData(*registers.i2m, arguments);
+                return;
+            default:
+                break;
+        }
+
+        for (u32 argument : arguments)
+            HandleMethod(method, argument);
+    }
+
+    void Maxwell3D::CallMethodFromMacro(u32 method, u32 argument) {
+        HandleMethod(method, argument);
+    }
+
+    u32 Maxwell3D::ReadMethodFromMacro(u32 method) {
+        return registers.raw[method];
+    }
+
+    void Maxwell3D::DrawInstanced(u32 drawTopology, u32 vertexArrayCount, u32 instanceCount, u32 vertexArrayStart, u32 globalBaseInstanceIndex) {
+        FlushEngineState();
+
+        auto topology{static_cast<type::DrawTopology>(drawTopology)};
+        registers.globalBaseInstanceIndex = globalBaseInstanceIndex;
+        registers.vertexArrayStart = vertexArrayStart;
+
+        interconnect.Draw(topology, *registers.streamOutputEnable, false, vertexArrayCount, vertexArrayStart, instanceCount, 0, globalBaseInstanceIndex);
+        registers.globalBaseInstanceIndex = 0;
+    }
+
+    void Maxwell3D::DrawIndexedInstanced(u32 drawTopology, u32 indexBufferCount, u32 instanceCount, u32 globalBaseVertexIndex, u32 indexBufferFirst, u32 globalBaseInstanceIndex) {
+        FlushEngineState();
+
+        auto topology{static_cast<type::DrawTopology>(drawTopology)};
+        interconnect.Draw(topology, *registers.streamOutputEnable, true, indexBufferCount, indexBufferFirst, instanceCount, globalBaseVertexIndex, globalBaseInstanceIndex);
+    }
+
+    void Maxwell3D::DrawIndexedIndirect(u32 drawTopology, span<u8> indirectBuffer, u32 count, u32 stride) {
+        FlushEngineState();
+
+        auto topology{static_cast<type::DrawTopology>(drawTopology)};
+        interconnect.DrawIndirect(topology, *registers.streamOutputEnable, true, indirectBuffer, count, stride);
+    }
+
 }

@@ -7,13 +7,19 @@ package emu.skyline.input
 
 import android.content.Intent
 import android.graphics.Canvas
+import android.graphics.Color
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.ViewTreeObserver
 import androidx.appcompat.app.AppCompatActivity
+import androidx.coordinatorlayout.widget.CoordinatorLayout
+import androidx.core.content.res.use
+import androidx.core.view.WindowCompat
 import androidx.core.view.marginTop
 import androidx.recyclerview.widget.DividerItemDecoration
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dagger.hilt.android.AndroidEntryPoint
 import emu.skyline.R
@@ -25,7 +31,8 @@ import emu.skyline.input.dialog.ButtonDialog
 import emu.skyline.input.dialog.RumbleDialog
 import emu.skyline.input.dialog.StickDialog
 import emu.skyline.input.onscreen.OnScreenEditActivity
-import emu.skyline.utils.Settings
+import emu.skyline.settings.AppSettings
+import emu.skyline.utils.WindowInsetsHelper
 import javax.inject.Inject
 
 /**
@@ -52,8 +59,14 @@ class ControllerActivity : AppCompatActivity() {
      */
     val axisMap = mutableMapOf<AxisId, ControllerStickViewItem>()
 
+    @Suppress("WeakerAccess")
+    val stickItems = mutableListOf<ControllerStickViewItem>()
+
+    @Suppress("WeakerAccess")
+    val buttonItems = mutableListOf<ControllerButtonViewItem>()
+
     @Inject
-    lateinit var settings : Settings
+    lateinit var appSettings : AppSettings
 
     @Inject
     lateinit var inputManager : InputManager
@@ -76,15 +89,17 @@ class ControllerActivity : AppCompatActivity() {
                 items.add(ControllerHeaderItem(getString(R.string.osc)))
 
                 val oscSummary = { checked : Boolean -> getString(if (checked) R.string.osc_shown else R.string.osc_not_shown) }
-                items.add(ControllerCheckBoxViewItem(getString(R.string.osc_enable), oscSummary.invoke(settings.onScreenControl), settings.onScreenControl) { item, position ->
+                items.add(ControllerCheckBoxViewItem(getString(R.string.osc_enable), oscSummary.invoke(appSettings.onScreenControl), appSettings.onScreenControl) { item, position ->
                     item.summary = oscSummary.invoke(item.checked)
-                    settings.onScreenControl = item.checked
-                    adapter.notifyItemChanged(position)
+                    appSettings.onScreenControl = item.checked
                 })
 
-                items.add(ControllerCheckBoxViewItem(getString(R.string.osc_recenter_sticks), "", settings.onScreenControlRecenterSticks) { item, position ->
-                    settings.onScreenControlRecenterSticks = item.checked
-                    adapter.notifyItemChanged(position)
+                items.add(ControllerCheckBoxViewItem(getString(R.string.osc_feedback), getString(R.string.osc_feedback_description), appSettings.onScreenControlFeedback) { item, position ->
+                    appSettings.onScreenControlFeedback = item.checked
+                })
+
+                items.add(ControllerCheckBoxViewItem(getString(R.string.osc_recenter_sticks), "", appSettings.onScreenControlRecenterSticks) { item, position ->
+                    appSettings.onScreenControlRecenterSticks = item.checked
                 })
 
                 items.add(ControllerViewItem(content = getString(R.string.osc_edit), onClick = {
@@ -105,17 +120,14 @@ class ControllerActivity : AppCompatActivity() {
                 }
             }
 
-            wroteTitle = false
+            if (controller.type.sticks.isNotEmpty())
+                items.add(ControllerHeaderItem(getString(R.string.sticks)))
 
             for (stick in controller.type.sticks) {
-                if (!wroteTitle) {
-                    items.add(ControllerHeaderItem(getString(R.string.sticks)))
-                    wroteTitle = true
-                }
-
                 val stickItem = ControllerStickViewItem(id, stick, onControllerStickClick)
 
                 items.add(stickItem)
+                stickItems.add(stickItem)
                 buttonMap[stick.button] = stickItem
                 axisMap[stick.xAxis] = stickItem
                 axisMap[stick.yAxis] = stickItem
@@ -129,32 +141,26 @@ class ControllerActivity : AppCompatActivity() {
             val buttonArrays = arrayOf(dpadButtons, faceButtons, shoulderTriggerButtons, shoulderRailButtons)
 
             for (buttonArray in buttonArrays) {
-                wroteTitle = false
+                val filteredButtons = controller.type.buttons.filter { it in buttonArray.second }
 
-                for (button in controller.type.buttons.filter { it in buttonArray.second }) {
-                    if (!wroteTitle) {
-                        items.add(ControllerHeaderItem(getString(buttonArray.first)))
-                        wroteTitle = true
-                    }
+                if (filteredButtons.isNotEmpty())
+                    items.add(ControllerHeaderItem(getString(buttonArray.first)))
 
+                for (button in filteredButtons) {
                     val buttonItem = ControllerButtonViewItem(id, button, onControllerButtonClick)
 
                     items.add(buttonItem)
+                    buttonItems.add(buttonItem)
                     buttonMap[button] = buttonItem
                 }
             }
 
-            wroteTitle = false
-
+            items.add(ControllerHeaderItem(getString(R.string.misc_buttons))) // The menu button will always exist
             for (button in controller.type.buttons.filterNot { item -> buttonArrays.any { item in it.second } }.plus(ButtonId.Menu)) {
-                if (!wroteTitle) {
-                    items.add(ControllerHeaderItem(getString(R.string.misc_buttons)))
-                    wroteTitle = true
-                }
-
                 val buttonItem = ControllerButtonViewItem(id, button, onControllerButtonClick)
 
                 items.add(buttonItem)
+                buttonItems.add(buttonItem)
                 buttonMap[button] = buttonItem
             }
         } finally {
@@ -174,6 +180,8 @@ class ControllerActivity : AppCompatActivity() {
         title = "${getString(R.string.config_controller)} #${id + 1}"
 
         setContentView(binding.root)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsHelper.applyToActivity(binding.root, binding.controllerList)
 
         setSupportActionBar(binding.titlebar.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
@@ -182,20 +190,42 @@ class ControllerActivity : AppCompatActivity() {
         binding.controllerList.layoutManager = layoutManager
         binding.controllerList.adapter = adapter
 
-        binding.controllerList.addOnScrollListener(object : RecyclerView.OnScrollListener() {
-            override fun onScrolled(recyclerView : RecyclerView, dx : Int, dy : Int) {
-                super.onScrolled(recyclerView, dx, dy)
+        var layoutDone = false // Tracks if the layout is complete to avoid retrieving invalid attributes
+        binding.coordinatorLayout.viewTreeObserver.addOnTouchModeChangeListener { isTouchMode ->
+            val layoutUpdate = {
+                val params = binding.controllerList.layoutParams as CoordinatorLayout.LayoutParams
+                if (!isTouchMode) {
+                    binding.titlebar.appBarLayout.setExpanded(true)
+                    params.height = binding.coordinatorLayout.height - binding.titlebar.toolbar.height
+                } else {
+                    params.height = CoordinatorLayout.LayoutParams.MATCH_PARENT
+                }
 
-                if (layoutManager.findLastCompletelyVisibleItemPosition() == adapter.itemCount - 1) binding.titlebar.appBarLayout.setExpanded(false)
+                binding.controllerList.layoutParams = params
+                binding.controllerList.requestLayout()
             }
-        })
 
-        val dividerItemDecoration = object : DividerItemDecoration(this, DividerItemDecoration.VERTICAL) {
+            if (!layoutDone) {
+                binding.coordinatorLayout.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
+                    override fun onGlobalLayout() {
+                        // We need to wait till the layout is done to get the correct height of the toolbar
+                        binding.coordinatorLayout.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                        layoutUpdate()
+                        layoutDone = true
+                    }
+                })
+            } else {
+                layoutUpdate()
+            }
+        }
+
+        val dividerItemDecoration = object : DividerItemDecoration(this, VERTICAL) {
             override fun onDraw(canvas : Canvas, parent : RecyclerView, state : RecyclerView.State) {
                 val divider = drawable!!
                 for (i in 0 until parent.childCount) {
                     val view = parent.getChildAt(i)
-                    if (parent.adapter!!.getItemViewType(parent.getChildAdapterPosition(view)) == adapter.getFactoryViewType(ControllerHeaderBindingFactory)) {
+                    val position = parent.getChildAdapterPosition(view)
+                    if (position != RecyclerView.NO_POSITION && parent.adapter!!.getItemViewType(position) == adapter.getFactoryViewType(ControllerHeaderBindingFactory)) {
                         val bottom = view.top - view.marginTop
                         val top = bottom - divider.intrinsicHeight
                         divider.setBounds(0, top, parent.width, bottom)
@@ -204,8 +234,6 @@ class ControllerActivity : AppCompatActivity() {
                 }
             }
         }
-
-        dividerItemDecoration.drawable.let { it?.setTint(getColor(R.color.dividerColor)); it }
         binding.controllerList.addItemDecoration(dividerItemDecoration)
 
         update()
@@ -284,6 +312,18 @@ class ControllerActivity : AppCompatActivity() {
             GeneralType.RumbleDevice -> {
                 RumbleDialog(item).show(supportFragmentManager, null)
             }
+
+            GeneralType.SetupGuide -> {
+                var dialogFragment : BottomSheetDialogFragment? = null
+
+                for (buttonItem in buttonItems.reversed().filter { it.button != ButtonId.Menu })
+                    dialogFragment = ButtonDialog(buttonItem, dialogFragment)
+
+                for (stickItem in stickItems.reversed())
+                    dialogFragment = StickDialog(stickItem, dialogFragment)
+
+                dialogFragment?.show(supportFragmentManager, null)
+            }
         }
         Unit
     }
@@ -301,7 +341,7 @@ class ControllerActivity : AppCompatActivity() {
      */
     override fun onKeyUp(keyCode : Int, event : KeyEvent?) : Boolean {
         if (keyCode == KeyEvent.KEYCODE_BUTTON_B) {
-            onBackPressed()
+            onBackPressedDispatcher.onBackPressed()
             return true
         }
 

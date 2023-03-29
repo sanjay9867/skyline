@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
-// Copyright © 2019 Ryujinx Team and Contributors
+// Copyright © 2019 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #include <gpu.h>
 #include <kernel/types/KProcess.h>
@@ -37,6 +37,21 @@ namespace skyline::service::visrv {
         if (level < PrivilegeLevel::Manager)
             return result::IllegalOperation;
         manager.RegisterService(SRVREG(IManagerDisplayService), session, response);
+        return {};
+    }
+
+    Result IApplicationDisplayService::ListDisplays(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        struct DisplayInfo {
+            std::array<u8, 0x40> displayName{"Default"};
+            u8 hasLimitedLayers{1};
+            u8 pad[7];
+            u64 maxLayers{1};
+            u64 width{1920};
+            u64 height{1080};
+        } displayInfo;
+
+        request.outputBuf.at(0).as<DisplayInfo>() = displayInfo;
+        response.Push<u64>(1);
         return {};
     }
 
@@ -108,5 +123,39 @@ namespace skyline::service::visrv {
         response.Push(scalingMode);
 
         return {};
+    }
+
+    Result IApplicationDisplayService::GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto width{request.Pop<i64>()};
+        auto height{request.Pop<i64>()};
+
+        if (!request.outputBuf.empty()) {
+            // As we don't support indirect layers, we just fill the output buffer with red
+            auto imageBuffer{request.outputBuf.at(0)};
+            std::fill(imageBuffer.begin(), imageBuffer.end(), 0xFF0000FF);
+        }
+
+        response.Push<i64>(width);
+        response.Push<i64>(height);
+
+        return {};
+    }
+
+    Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
+
+        if (width <= 0 || height <= 0)
+            return result::InvalidDimensions;
+
+        constexpr ssize_t A8B8G8R8Size{4}; //!< The size of a pixel in the A8B8G8R8 format, this format is used by indirect layers
+        i64 layerSize{width * height * A8B8G8R8Size};
+
+        constexpr ssize_t BlockSize{0x20000}; //!< The size of an arbitrarily defined block, the layer size must be aligned to a block
+        response.Push<i64>(util::AlignUpNpot<i64>(layerSize, BlockSize));
+
+        constexpr size_t DefaultAlignment{0x1000}; //!< The default alignment of the buffer
+        response.Push<u64>(DefaultAlignment);
+
+        return Result{};
     }
 }

@@ -4,6 +4,8 @@
 #pragma once
 
 #include <common.h>
+#include "types/KSession.h"
+#include "types/KProcess.h"
 
 namespace skyline {
     namespace constant {
@@ -24,6 +26,7 @@ namespace skyline {
             Control = 5,            //!< A transaction between the client and IPC Manager
             RequestWithContext = 6, //!< Request with Token
             ControlWithContext = 7, //!< Control with Token
+            TipcCloseSession = 0xF,
         };
 
         /**
@@ -194,6 +197,7 @@ namespace skyline {
             CommandHeader *header{};
             HandleDescriptor *handleDesc{};
             bool isDomain{}; //!< If this is a domain request
+            bool isTipc; //!< If this is request uses the TIPC protocol
             DomainHeaderRequest *domain{};
             PayloadHeader *payload{};
             u8 *cmdArg{}; //!< A pointer to the data payload
@@ -229,6 +233,20 @@ namespace skyline {
                 else
                     payloadOffset += view.length();
                 return view;
+            }
+
+            /**
+             * @brief Pops a Service object from the response as a domain or kernel handle
+             */
+            template<typename ServiceType>
+            std::shared_ptr<ServiceType> PopService(u32 id, type::KSession &session) {
+                std::shared_ptr<service::BaseService> serviceObject;
+                if (session.isDomain)
+                    serviceObject = session.domains.at(domainObjects.at(id));
+                else
+                    serviceObject = session.state.process->GetHandle<kernel::type::KSession>(moveHandles.at(id))->serviceObject;
+
+                return std::static_pointer_cast<ServiceType>(serviceObject);
             }
 
             /**
@@ -282,8 +300,9 @@ namespace skyline {
             /**
              * @brief Writes this IpcResponse object's contents into TLS
              * @param isDomain Indicates if this is a domain response
+             * @param isTipc Indicates if this is a TIPC response
              */
-            void WriteResponse(bool isDomain);
+            void WriteResponse(bool isDomain, bool isTipc = false);
         };
     }
 }

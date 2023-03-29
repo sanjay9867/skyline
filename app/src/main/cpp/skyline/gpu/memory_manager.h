@@ -11,29 +11,61 @@ namespace skyline::gpu::memory {
      * @brief A view into a CPU mapping of a Vulkan buffer
      * @note The mapping **should not** be used after the lifetime of the object has ended
      */
-    struct StagingBuffer : public span<u8>, public FenceCycleDependency {
+    struct Buffer : public span<u8> {
         VmaAllocator vmaAllocator;
         VmaAllocation vmaAllocation;
         vk::Buffer vkBuffer;
 
-        constexpr StagingBuffer(u8 *pointer, size_t size, VmaAllocator vmaAllocator, vk::Buffer vkBuffer, VmaAllocation vmaAllocation)
+        constexpr Buffer(u8 *pointer, size_t size, VmaAllocator vmaAllocator, vk::Buffer vkBuffer, VmaAllocation vmaAllocation)
             : vmaAllocator(vmaAllocator),
               vkBuffer(vkBuffer),
               vmaAllocation(vmaAllocation),
               span(pointer, size) {}
 
-        StagingBuffer(const StagingBuffer &) = delete;
+        Buffer(const Buffer &) = delete;
 
-        constexpr StagingBuffer(StagingBuffer &&other)
+        constexpr Buffer(Buffer &&other)
             : vmaAllocator(std::exchange(other.vmaAllocator, nullptr)),
               vmaAllocation(std::exchange(other.vmaAllocation, nullptr)),
-              vkBuffer(std::exchange(other.vkBuffer, {})) {}
+              vkBuffer(std::exchange(other.vkBuffer, {})),
+              span(other) {}
 
-        StagingBuffer &operator=(const StagingBuffer &) = delete;
+        Buffer &operator=(const Buffer &) = delete;
 
-        StagingBuffer &operator=(StagingBuffer &&) = default;
+        Buffer &operator=(Buffer &&) = default;
 
-        ~StagingBuffer();
+        ~Buffer();
+    };
+
+    /**
+     * @brief A Buffer that can be independently attached to a fence cycle
+     */
+    class StagingBuffer : public Buffer {
+        using Buffer::Buffer;
+    };
+
+    /**
+     * @brief A buffer that directly owns it's own memory
+     */
+    struct ImportedBuffer : public span<u8> {
+        vk::raii::Buffer vkBuffer;
+        vk::raii::DeviceMemory vkMemory;
+
+        ImportedBuffer(span<u8> data, vk::raii::Buffer vkBuffer, vk::raii::DeviceMemory vkMemory)
+            : vkBuffer{std::move(vkBuffer)},
+              vkMemory{std::move(vkMemory)},
+              span{data} {}
+
+        ImportedBuffer(const ImportedBuffer &) = delete;
+
+        ImportedBuffer(ImportedBuffer &&other)
+            : vkBuffer{std::move(other.vkBuffer)},
+              vkMemory{std::move(other.vkMemory)},
+              span{other} {}
+
+        ImportedBuffer &operator=(const ImportedBuffer &) = delete;
+
+        ImportedBuffer &operator=(ImportedBuffer &&) = default;
     };
 
     /**
@@ -86,11 +118,11 @@ namespace skyline::gpu::memory {
      */
     class MemoryManager {
       private:
-        const GPU &gpu;
+        GPU &gpu;
         VmaAllocator vmaAllocator{VK_NULL_HANDLE};
 
       public:
-        MemoryManager(const GPU &gpu);
+        MemoryManager(GPU &gpu);
 
         ~MemoryManager();
 
@@ -98,6 +130,11 @@ namespace skyline::gpu::memory {
          * @brief Creates a buffer which is optimized for staging (Transfer Source)
          */
         std::shared_ptr<StagingBuffer> AllocateStagingBuffer(vk::DeviceSize size);
+
+        /**
+         * @brief Creates a buffer with a CPU mapping and all usage flags
+         */
+        Buffer AllocateBuffer(vk::DeviceSize size);
 
         /**
          * @brief Creates an image which is allocated and deallocated using RAII
@@ -108,5 +145,10 @@ namespace skyline::gpu::memory {
          * @brief Creates an image which is allocated and deallocated using RAII and is optimal for being mapped on the CPU
          */
         Image AllocateMappedImage(const vk::ImageCreateInfo &createInfo);
+
+        /**
+         * @brief Maps the input CPU mapped region into a new buffer
+         */
+        ImportedBuffer ImportBuffer(span<u8> cpuMapping);
     };
 }

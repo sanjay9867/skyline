@@ -15,6 +15,12 @@ namespace skyline::service::settings {
         ISettingsServer(const DeviceState &state, ServiceManager &manager);
 
         /**
+         * @brief Gets the current system language
+         * @url https://switchbrew.org/wiki/Settings_services#GetLanguageCode
+         */
+        Result GetLanguageCode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Reads the available language codes that an application can use (pre 4.0.0)
          */
         Result GetAvailableLanguageCodes(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
@@ -25,14 +31,33 @@ namespace skyline::service::settings {
         Result MakeLanguageCode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @brief Returns the number of available language codes that an application can use (pre 4.0.0)
+         */
+        Result GetAvailableLanguageCodeCount(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Returns the user-selected region's code
+         */
+        Result GetRegionCode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Reads the available language codes that an application can use (post 4.0.0)
          */
         Result GetAvailableLanguageCodes2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        /**
+         * @brief Returns the number of available language codes that an application can use (post 4.0.0)
+         */
+        Result GetAvailableLanguageCodeCount2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         SERVICE_DECL(
+            SFUNC(0x0, ISettingsServer, GetLanguageCode),
             SFUNC(0x1, ISettingsServer, GetAvailableLanguageCodes),
             SFUNC(0x2, ISettingsServer, MakeLanguageCode),
-            SFUNC(0x5, ISettingsServer, GetAvailableLanguageCodes2)
+            SFUNC(0x3, ISettingsServer, GetAvailableLanguageCodeCount),
+            SFUNC(0x4, ISettingsServer, GetRegionCode),
+            SFUNC(0x5, ISettingsServer, GetAvailableLanguageCodes2),
+            SFUNC(0x6, ISettingsServer, GetAvailableLanguageCodeCount2)
         )
     };
 }

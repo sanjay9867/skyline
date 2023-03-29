@@ -19,7 +19,8 @@ import emu.skyline.input.JoyConLeftController
  * @param type The type of controller setting this item is displaying
  */
 class ControllerGeneralViewItem(private val controllerId : Int, val type : GeneralType, private val onClick : (item : ControllerGeneralViewItem, position : Int) -> Unit) : ControllerViewItem() {
-    override fun bind(binding : ControllerItemBinding, position : Int) {
+    override fun bind(holder : GenericViewHolder<ControllerItemBinding>, position : Int) {
+        val binding = holder.binding
         val context = binding.root.context
         val controller = context.getInputManager().controllers[controllerId]!!
 
@@ -35,8 +36,10 @@ class ControllerGeneralViewItem(private val controllerId : Int, val type : Gener
             }
 
             GeneralType.RumbleDevice -> controller.rumbleDeviceName ?: context.getString(R.string.none)
+
+            GeneralType.SetupGuide -> context.getString(R.string.setup_guide_description)
         }
-        super.bind(binding, position)
+        super.bind(holder, position)
 
         binding.root.setOnClickListener { onClick.invoke(this, position) }
     }

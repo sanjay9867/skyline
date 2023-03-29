@@ -12,10 +12,18 @@ namespace skyline {
     }
 
     void Logger::LoggerContext::Finalize() {
+        std::scoped_lock lock{mutex};
         logFile.close();
     }
 
+    void Logger::LoggerContext::TryFlush() {
+        std::unique_lock lock(mutex, std::try_to_lock);
+        if (lock)
+            logFile.flush();
+    }
+
     void Logger::LoggerContext::Flush() {
+        std::scoped_lock lock{mutex};
         logFile.flush();
     }
 
@@ -57,7 +65,7 @@ namespace skyline {
     }
 
     void Logger::LoggerContext::Write(const std::string &str) {
-        std::lock_guard guard(mutex);
+        std::scoped_lock guard{mutex};
         logFile << str;
     }
 }

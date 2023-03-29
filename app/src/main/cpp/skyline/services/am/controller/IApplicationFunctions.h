@@ -20,6 +20,9 @@ namespace skyline::service::am {
     class IApplicationFunctions : public BaseService {
       private:
         std::shared_ptr<type::KEvent> gpuErrorEvent; //!< The event signalled on GPU errors
+        std::shared_ptr<type::KEvent> friendInvitationStorageChannelEvent; //!< The event signalled on friend invitations
+        std::shared_ptr<type::KEvent> notificationStorageChannelEvent;
+        i32 previousProgramIndex{-1}; //!< There was no previous title
 
       public:
         IApplicationFunctions(const DeviceState &state, ServiceManager &manager);
@@ -37,10 +40,23 @@ namespace skyline::service::am {
         Result EnsureSaveData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @brief Sets a termination result for the application
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#SetTerminateResult
+         */
+        Result SetTerminateResult(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Returns the desired language for the application
          * @url https://switchbrew.org/wiki/Applet_Manager_services#GetDesiredLanguage
          */
         Result GetDesiredLanguage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetDisplayVersion
+         */
+        Result GetDisplayVersion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetSaveDataSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
          * @brief Returns if the application is running or not, always returns true
@@ -67,6 +83,11 @@ namespace skyline::service::am {
         Result SetGamePlayRecordingState(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#EnableApplicationCrashReport
+         */
+        Result EnableApplicationCrashReport(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Uses the given transfer memory to setup memory for the screenshot copyright image
          * @url https://switchbrew.org/wiki/Applet_Manager_services#InitializeApplicationCopyrightFrameBuffer
          */
@@ -85,23 +106,62 @@ namespace skyline::service::am {
         Result SetApplicationCopyrightVisibility(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#QueryApplicationPlayStatistics
+         */
+        Result QueryApplicationPlayStatistics(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#QueryApplicationPlayStatisticsByUid
+         */
+        Result QueryApplicationPlayStatisticsByUid(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Gets the ProgramIndex of the Application which launched this title
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetPreviousProgramIndex
+         */
+        Result GetPreviousProgramIndex(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Obtains a handle to the system GPU error KEvent
          * @url https://switchbrew.org/wiki/Applet_Manager_services#GetGpuErrorDetectedSystemEvent
          */
         Result GetGpuErrorDetectedSystemEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        /**
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetFriendInvitationStorageChannelEvent
+         */
+        Result GetFriendInvitationStorageChannelEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result TryPopFromFriendInvitationStorageChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Obtains a handle to the Notification StorageChannel KEvent
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetNotificationStorageChannelEvent
+         */
+        Result GetNotificationStorageChannelEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         SERVICE_DECL(
             SFUNC(0x1, IApplicationFunctions, PopLaunchParameter),
             SFUNC(0x14, IApplicationFunctions, EnsureSaveData),
             SFUNC(0x15, IApplicationFunctions, GetDesiredLanguage),
+            SFUNC(0x16, IApplicationFunctions, SetTerminateResult),
+            SFUNC(0x17, IApplicationFunctions, GetDisplayVersion),
+            SFUNC(0x1A, IApplicationFunctions, GetSaveDataSize),
             SFUNC(0x28, IApplicationFunctions, NotifyRunning),
             SFUNC(0x32, IApplicationFunctions, GetPseudoDeviceId),
             SFUNC(0x42, IApplicationFunctions, InitializeGamePlayRecording),
             SFUNC(0x43, IApplicationFunctions, SetGamePlayRecordingState),
+            SFUNC(0x5A, IApplicationFunctions, EnableApplicationCrashReport),
             SFUNC(0x64, IApplicationFunctions, InitializeApplicationCopyrightFrameBuffer),
             SFUNC(0x65, IApplicationFunctions, SetApplicationCopyrightImage),
             SFUNC(0x66, IApplicationFunctions, SetApplicationCopyrightVisibility),
-            SFUNC(0x82, IApplicationFunctions, GetGpuErrorDetectedSystemEvent)
+            SFUNC(0x6E, IApplicationFunctions, QueryApplicationPlayStatistics),
+            SFUNC(0x6F, IApplicationFunctions, QueryApplicationPlayStatisticsByUid),
+            SFUNC(0x7B, IApplicationFunctions, GetPreviousProgramIndex),
+            SFUNC(0x82, IApplicationFunctions, GetGpuErrorDetectedSystemEvent),
+            SFUNC(0x8C, IApplicationFunctions, GetFriendInvitationStorageChannelEvent),
+            SFUNC(0x8D, IApplicationFunctions, TryPopFromFriendInvitationStorageChannel),
+            SFUNC(0x96, IApplicationFunctions, GetNotificationStorageChannelEvent)
         )
 
     };

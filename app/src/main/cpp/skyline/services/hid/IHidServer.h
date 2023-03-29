@@ -7,6 +7,10 @@
 #include "IAppletResource.h"
 
 namespace skyline::service::hid {
+    namespace result {
+        constexpr Result InvalidNpadId(202, 709);
+    }
+    
     /**
      * @brief IHidServer or hid service is used to access input devices
      * @url https://switchbrew.org/wiki/HID_services#hid
@@ -30,6 +34,51 @@ namespace skyline::service::hid {
          * @brief Activates the touch screen (if it's disabled, it's enabled by default)
          */
         Result ActivateTouchScreen(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Activates the mouse
+         */
+        Result ActivateMouse(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Activates the keyboard
+         */
+        Result ActivateKeyboard(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Starts the Six Axis Sensor for a specific Npad
+         * @url https://switchbrew.org/wiki/HID_services#StartSixAxisSensor
+         */
+        Result StartSixAxisSensor(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Stops the Six Axis Sensor for a specific Npad
+         * @url https://switchbrew.org/wiki/HID_services#StopSixAxisSensor
+         */
+        Result StopSixAxisSensor(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Sets the gyroscope zero drift mode
+         * @url https://switchbrew.org/wiki/HID_services#SetGyroscopeZeroDriftMode
+         */
+        Result SetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Returns the gyroscope zero drift mode
+         * @url https://switchbrew.org/wiki/HID_services#GetGyroscopeZeroDriftMode
+         */
+        Result GetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Rsets the gyroscope zero drift mode to Standard
+         * @url https://switchbrew.org/wiki/HID_services#ResetGyroscopeZeroDriftMode
+         */
+        Result ResetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @url https://switchbrew.org/wiki/HID_services#IsSixAxisSensorAtRest
+         */
+        Result IsSixAxisSensorAtRest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
          * @brief Sets the style of controllers supported
@@ -109,10 +158,30 @@ namespace skyline::service::hid {
         Result SetNpadJoyAssignmentModeDual(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
-         * @brief Returns an instance of #IActiveVibrationDeviceList
-         * @url https://switchbrew.org/wiki/HID_services#CreateActiveVibrationDeviceList
+         * @url https://switchbrew.org/wiki/HID_services#StartLrAssignmentMode
          */
-        Result CreateActiveVibrationDeviceList(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        Result StartLrAssignmentMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @url https://switchbrew.org/wiki/HID_services#StopLrAssignmentMode
+         */
+        Result StopLrAssignmentMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @url https://switchbrew.org/wiki/HID_services#SetNpadHandheldActivationMode
+         */
+        Result SetNpadHandheldActivationMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @url https://switchbrew.org/wiki/HID_services#GetNpadHandheldActivationMode
+         */
+        Result GetNpadHandheldActivationMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Returns the current vibration state of a device
+         * @url https://switchbrew.org/wiki/HID_services#GetVibrationDeviceInfo
+         */
+         Result GetVibrationDeviceInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
          * @brief Send a single vibration value to a HID device
@@ -121,15 +190,40 @@ namespace skyline::service::hid {
         Result SendVibrationValue(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @brief Returns an instance of #IActiveVibrationDeviceList
+         * @url https://switchbrew.org/wiki/HID_services#CreateActiveVibrationDeviceList
+         */
+        Result CreateActiveVibrationDeviceList(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Send vibration values to a HID device
          * @url https://switchbrew.org/wiki/HID_services#SendVibrationValues
          */
         Result SendVibrationValues(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        /**
+         * @url https://switchbrew.org/wiki/HID_services#IsVibrationPermitted
+         */
+        Result IsVibrationPermitted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Sets boost mode to a Palma device
+         * @url https://switchbrew.org/wiki/HID_services#SetPalmaBoostMode
+         */
+        Result SetPalmaBoostMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         SERVICE_DECL(
             SFUNC(0x0, IHidServer, CreateAppletResource),
             SFUNC(0x1, IHidServer, ActivateDebugPad),
             SFUNC(0xB, IHidServer, ActivateTouchScreen),
+            SFUNC(0x15, IHidServer, ActivateMouse),
+            SFUNC(0x1F, IHidServer, ActivateKeyboard),
+            SFUNC(0x42, IHidServer, StartSixAxisSensor),
+            SFUNC(0x43, IHidServer, StopSixAxisSensor),
+            SFUNC(0x4F, IHidServer, SetGyroscopeZeroDriftMode),
+            SFUNC(0x50, IHidServer, GetGyroscopeZeroDriftMode),
+            SFUNC(0x51, IHidServer, ResetGyroscopeZeroDriftMode),
+            SFUNC(0x52, IHidServer, IsSixAxisSensorAtRest),
             SFUNC(0x64, IHidServer, SetSupportedNpadStyleSet),
             SFUNC(0x65, IHidServer, GetSupportedNpadStyleSet),
             SFUNC(0x66, IHidServer, SetSupportedNpadIdType),
@@ -143,9 +237,16 @@ namespace skyline::service::hid {
             SFUNC(0x7A, IHidServer, SetNpadJoyAssignmentModeSingleByDefault),
             SFUNC(0x7B, IHidServer, SetNpadJoyAssignmentModeSingle),
             SFUNC(0x7C, IHidServer, SetNpadJoyAssignmentModeDual),
+            SFUNC(0x7E, IHidServer, StartLrAssignmentMode),
+            SFUNC(0x7F, IHidServer, StopLrAssignmentMode),
+            SFUNC(0x80, IHidServer, SetNpadHandheldActivationMode),
+            SFUNC(0x81, IHidServer, GetNpadHandheldActivationMode),
             SFUNC(0xCB, IHidServer, CreateActiveVibrationDeviceList),
+            SFUNC(0xC8, IHidServer, GetVibrationDeviceInfo),
             SFUNC(0xC9, IHidServer, SendVibrationValue),
-            SFUNC(0xCE, IHidServer, SendVibrationValues)
+            SFUNC(0xCE, IHidServer, SendVibrationValues),
+            SFUNC(0xCD, IHidServer, IsVibrationPermitted),
+            SFUNC(0x20D, IHidServer, SetPalmaBoostMode)
         )
     };
 }

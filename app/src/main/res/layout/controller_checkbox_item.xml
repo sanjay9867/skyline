@@ -9,7 +9,7 @@
     android:gravity="center_vertical"
     android:minHeight="?android:attr/listPreferredItemHeightSmall"
     android:orientation="horizontal"
-    android:paddingStart="72dp"
+    android:paddingStart="?android:attr/listPreferredItemPaddingStart"
     android:paddingEnd="?android:attr/listPreferredItemPaddingEnd">
 
     <LinearLayout
@@ -22,29 +22,29 @@
 
         <TextView
             android:id="@+id/text_title"
+            style="?attr/textAppearanceTitleMedium"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:ellipsize="marquee"
             android:singleLine="true"
-            android:textAppearance="?android:attr/textAppearanceListItem"
             tools:text="Title" />
 
         <TextView
-            android:id="@+id/text_subtitle"
+            android:id="@+id/text_author"
+            style="?attr/textAppearanceBodyMedium"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:maxLines="10"
-            android:textAppearance="?android:attr/textAppearanceListItemSecondary"
-            android:textColor="?android:attr/textColorSecondary"
             tools:text="Summary" />
     </LinearLayout>
 
-    <com.google.android.material.checkbox.MaterialCheckBox
+    <com.google.android.material.materialswitch.MaterialSwitch
         android:id="@+id/checkbox"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:background="@null"
         android:clickable="false"
-        android:gravity="end|center_vertical"
+        android:focusable="false"
         android:paddingStart="16dp"
         android:paddingEnd="0dp" />
 </LinearLayout>

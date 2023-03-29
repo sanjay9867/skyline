@@ -7,12 +7,11 @@
 #include "driver.h"
 #include "devices/nvdevice.h"
 
-#define NVRESULT(x) [&response, this](NvResult err) {         \
-        if (err != NvResult::Success)                         \
+#define NVRESULT(x) [&response](NvResult err) {         \
+        if (err != NvResult::Success)                   \
             Logger::Debug("IOCTL Failed: 0x{:X}", err); \
-                                                              \
-        response.Push<NvResult>(err);                         \
-        return Result{};                                      \
+        response.Push<NvResult>(err);                   \
+        return Result{};                                \
     } (x)
 
 namespace skyline::service::nvdrv {
@@ -134,10 +133,27 @@ namespace skyline::service::nvdrv {
             return NVRESULT(driver.Ioctl3(fd, ioctl, *buf, inlineBuf));
     }
 
+    Result INvDrvServices::GetStatus(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        struct Status {
+            u32 freeSize;
+            u32 allocatableSize;
+            u32 minimumFreeSize;
+            u32 minimumAllocatableSize;
+            u32 reserved;
+        };
+
+        // Return empty values since we don't use the transfer memory for allocations
+        response.Push<Status>({});
+        return NVRESULT(NvResult::Success);
+    }
+
     Result INvDrvServices::SetAruid(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         return NVRESULT(NvResult::Success);
     }
 
+    Result INvDrvServices::DumpStatus(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
 
     Result INvDrvServices::SetGraphicsFirmwareMemoryMarginEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         return {};

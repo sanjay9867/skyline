@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/signal.h>
+#include <nce.h>
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include <soc.h>
@@ -75,7 +76,7 @@ namespace skyline::soc::host1x {
                 case Host1xOpcode::SetClass:
                     targetClass = methodHeader.classId;
 
-                    for (u32 i{}; i < std::numeric_limits<u8>::max(); i++)
+                    for (u32 i{}; i < std::numeric_limits<u8>::digits; i++)
                         if (methodHeader.classMethodMask & (1 << i))
                             Send(targetClass, methodHeader.methodAddress + i, *++entry);
 
@@ -113,22 +114,32 @@ namespace skyline::soc::host1x {
     }
 
     void ChannelCommandFifo::Run() {
-        pthread_setname_np(pthread_self(), "ChannelCommandFifo");
+        if (int result{pthread_setname_np(pthread_self(), "ChannelCmdFifo")})
+            Logger::Warn("Failed to set the thread name: {}", strerror(result));
+
         try {
-            signal::SetSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, signal::ExceptionalSignalHandler);
+            signal::SetSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE}, signal::ExceptionalSignalHandler);
+            signal::SetSignalHandler({SIGSEGV}, nce::NCE::HostSignalHandler); // We may access NCE trapped memory
 
             gatherQueue.Process([this](span<u32> gather) {
                 Logger::Debug("Processing pushbuffer: 0x{:X}, size: 0x{:X}", gather.data(), gather.size());
                 Process(gather);
-            });
+            }, [] {});
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 Logger::Error("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
+                Logger::EmulationContext.Flush();
                 signal::BlockSignal({SIGINT});
                 state.process->Kill(false);
             }
+        } catch (const exception &e) {
+            Logger::ErrorNoPrefix("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
+            Logger::EmulationContext.Flush();
+            signal::BlockSignal({SIGINT});
+            state.process->Kill(false);
         } catch (const std::exception &e) {
             Logger::Error(e.what());
+            Logger::EmulationContext.Flush();
             signal::BlockSignal({SIGINT});
             state.process->Kill(false);
         }

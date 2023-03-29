@@ -27,6 +27,8 @@ namespace skyline {
          */
         constexpr span(T &spn) : std::span<T, Extent>(&spn, 1) {}
 
+        constexpr span(nullptr_t) : std::span<T, Extent>() {}
+
         /**
          * @brief We want to support implicitly casting from std::string_view -> span as it's just a specialization of a data view which span is a generic form of, the opposite doesn't hold true as not all data held by a span is string data therefore the conversion isn't implicit there
          */
@@ -80,13 +82,27 @@ namespace skyline {
         /**
          * @return If a supplied span is located entirely inside this span and is effectively a subspan
          */
-        constexpr bool contains(const span<T, Extent>& other) const {
+        constexpr bool contains(const span<T, Extent> &other) const {
             return this->begin() <= other.begin() && this->end() >= other.end();
+        }
+
+        /**
+         * @return If a supplied address is located inside this span
+         */
+        constexpr bool contains(const T *address) const {
+            return this->data() <= address && this->end().base() > address;
+        }
+
+        /**
+         * @return If the span is valid by not being null
+         */
+        constexpr bool valid() const {
+            return this->data() != nullptr;
         }
 
         /** Comparision operators for equality and binary searches **/
 
-        constexpr bool operator==(const span<T, Extent>& other) const {
+        constexpr bool operator==(const span<T, Extent> &other) const {
             return this->data() == other.data() && this->size() == other.size();
         }
 
@@ -94,7 +110,7 @@ namespace skyline {
             return this->data() < other.data();
         }
 
-        constexpr bool operator<(T* pointer) const {
+        constexpr bool operator<(T *pointer) const {
             return this->data() < pointer;
         }
 
@@ -146,4 +162,26 @@ namespace skyline {
     span(Container &) -> span<typename Container::value_type>;
     template<typename Container>
     span(const Container &) -> span<const typename Container::value_type>;
+
+    /**
+     * @return If the contents of the two spans are byte-for-byte equal
+     */
+    template<typename T, size_t Extent = std::dynamic_extent>
+    struct SpanEqual {
+        constexpr bool operator()(const span<T, Extent> &lhs, const span<T, Extent> &rhs) const {
+            if (lhs.size_bytes() != rhs.size_bytes())
+                return false;
+            return std::equal(lhs.begin(), lhs.end(), rhs.begin());
+        }
+    };
+
+    /**
+     * @return A hash of the contents of the span
+     */
+    template<typename T, size_t Extent = std::dynamic_extent>
+    struct SpanHash {
+        constexpr size_t operator()(const skyline::span<T, Extent> &x) const {
+            return XXH64(x.data(), x.size_bytes(), 0);
+        }
+    };
 }

@@ -7,21 +7,22 @@ package emu.skyline
 
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.view.View
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
-import androidx.core.content.FileProvider
 import androidx.core.content.res.use
 import androidx.core.graphics.drawable.toBitmap
+import androidx.core.view.WindowCompat
 import androidx.core.view.isInvisible
 import androidx.core.view.isVisible
-import androidx.core.view.size
+import androidx.documentfile.provider.DocumentFile
 import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -29,16 +30,21 @@ import com.google.android.material.snackbar.Snackbar
 import dagger.hilt.android.AndroidEntryPoint
 import emu.skyline.adapter.*
 import emu.skyline.data.AppItem
+import emu.skyline.data.AppItemTag
 import emu.skyline.data.DataItem
 import emu.skyline.data.HeaderItem
 import emu.skyline.databinding.MainActivityBinding
 import emu.skyline.loader.AppEntry
 import emu.skyline.loader.LoaderResult
 import emu.skyline.loader.RomFormat
-import emu.skyline.utils.Settings
+import emu.skyline.provider.DocumentsProvider
+import emu.skyline.settings.AppSettings
+import emu.skyline.settings.EmulationSettings
+import emu.skyline.settings.SettingsActivity
+import emu.skyline.utils.GpuDriverHelper
+import emu.skyline.utils.WindowInsetsHelper
 import javax.inject.Inject
 import kotlin.math.ceil
-
 
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
@@ -49,18 +55,21 @@ class MainActivity : AppCompatActivity() {
     private val binding by lazy { MainActivityBinding.inflate(layoutInflater) }
 
     @Inject
-    lateinit var settings : Settings
+    lateinit var appSettings : AppSettings
 
     private val adapter = GenericAdapter()
 
-    private val layoutType get() = LayoutType.values()[settings.layoutType.toInt()]
-
-    private val missingIcon by lazy { ContextCompat.getDrawable(this, R.drawable.default_icon)!!.toBitmap(256, 256) }
+    private val layoutType get() = LayoutType.values()[appSettings.layoutType]
 
     private val viewModel by viewModels<MainViewModel>()
 
     private var formatFilter : RomFormat? = null
     private var appEntries : Map<RomFormat, List<AppEntry>>? = null
+
+    enum class SortingOrder {
+        AlphabeticalAsc,
+        AlphabeticalDesc
+    }
 
     private var refreshIconVisible = false
         set(visible) {
@@ -76,22 +85,22 @@ class MainActivity : AppCompatActivity() {
     private val documentPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) {
         it?.let { uri ->
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            settings.searchLocation = uri.toString()
+            appSettings.searchLocation = uri.toString()
 
             loadRoms(false)
         }
     }
 
     private val settingsCallback = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (settings.refreshRequired) loadRoms(false)
+        if (appSettings.refreshRequired) loadRoms(false)
     }
 
-    private fun AppItem.toViewItem() = AppViewItem(layoutType, this, missingIcon, ::selectStartGame, ::selectShowGameDialog)
+    private fun AppItem.toViewItem() = AppViewItem(layoutType, this, ::selectStartGame, ::selectShowGameDialog)
 
     override fun onCreate(savedInstanceState : Bundle?) {
         // Need to create new instance of settings, dependency injection happens
         AppCompatDelegate.setDefaultNightMode(
-            when ((Settings(this).appTheme.toInt())) {
+            when ((AppSettings(this).appTheme)) {
                 0 -> AppCompatDelegate.MODE_NIGHT_NO
                 1 -> AppCompatDelegate.MODE_NIGHT_YES
                 2 -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
@@ -101,12 +110,15 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         setContentView(binding.root)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsHelper.applyToActivity(binding.root, binding.appList)
 
-        PreferenceManager.setDefaultValues(this, R.xml.preferences, false)
+        PreferenceManager.setDefaultValues(this, R.xml.app_preferences, false)
+        PreferenceManager.setDefaultValues(this, R.xml.emulation_preferences, false)
 
         adapter.apply {
-            setHeaderItems(listOf(HeaderRomFilterItem(formatOrder, if (settings.filter == 0) null else formatOrder[settings.filter - 1]) { romFormat ->
-                settings.filter = romFormat?.let { formatOrder.indexOf(romFormat) + 1 } ?: 0
+            setHeaderItems(listOf(HeaderRomFilterItem(formatOrder, if (appSettings.romFormatFilter == 0) null else formatOrder[appSettings.romFormatFilter - 1]) { romFormat ->
+                appSettings.romFormatFilter = romFormat?.let { formatOrder.indexOf(romFormat) + 1 } ?: 0
                 formatFilter = romFormat
                 populateAdapter()
             }))
@@ -119,25 +131,23 @@ class MainActivity : AppCompatActivity() {
         setupAppList()
 
         binding.swipeRefreshLayout.apply {
-            setProgressBackgroundColorSchemeColor(getColor(R.color.backgroundColorVariant))
-            setColorSchemeColors(obtainStyledAttributes(intArrayOf(R.attr.colorAccent)).use { it.getColor(0, Color.BLACK) })
+            setProgressBackgroundColorSchemeColor(obtainStyledAttributes(intArrayOf(R.attr.colorSurfaceVariant)).use { it.getColor(0, Color.BLACK) })
+            setColorSchemeColors(obtainStyledAttributes(intArrayOf(R.attr.colorPrimary)).use { it.getColor(0, Color.WHITE) })
             post { setDistanceToTriggerSync(binding.swipeRefreshLayout.height / 3) }
             setOnRefreshListener { loadRoms(false) }
         }
 
         viewModel.stateData.observe(this, ::handleState)
-        loadRoms(!settings.refreshRequired)
+        loadRoms(!appSettings.refreshRequired)
 
         binding.searchBar.apply {
             binding.logIcon.setOnClickListener {
-                val file = applicationContext.filesDir.resolve("emulation.sklog")
-                if (file.length() != 0L) {
-                    val uri = FileProvider.getUriForFile(this@MainActivity, "skyline.emu.fileprovider", file)
+                val file = DocumentFile.fromSingleUri(this@MainActivity, DocumentsContract.buildDocumentUri(DocumentsProvider.AUTHORITY, "${DocumentsProvider.ROOT_ID}/logs/emulation.sklog"))!!
+                if (file.exists() && file.length() != 0L) {
                     val intent = Intent(Intent.ACTION_SEND)
-                        .setType("text/plain")
+                        .setDataAndType(file.uri, "text/plain")
                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        .setData(uri)
-                        .putExtra(Intent.EXTRA_STREAM, uri)
+                        .putExtra(Intent.EXTRA_STREAM, file.uri)
                     startActivity(Intent.createChooser(intent, getString(R.string.log_share_prompt)))
                 } else {
                     Snackbar.make(this@MainActivity.findViewById(android.R.id.content), getString(R.string.logs_not_found), Snackbar.LENGTH_SHORT).show()
@@ -155,39 +165,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private inner class GridSpacingItemDecoration : RecyclerView.ItemDecoration() {
-        private val padding = resources.getDimensionPixelSize(R.dimen.grid_padding)
-
-        override fun getItemOffsets(outRect : Rect, view : View, parent : RecyclerView, state : RecyclerView.State) {
-            super.getItemOffsets(outRect, view, parent, state)
-
-            val gridLayoutManager = parent.layoutManager as GridLayoutManager
-            val layoutParams = view.layoutParams as GridLayoutManager.LayoutParams
-            when (layoutParams.spanIndex) {
-                0 -> outRect.left = padding
-
-                gridLayoutManager.spanCount - 1 -> outRect.right = padding
-
-                else -> {
-                    outRect.left = padding / 2
-                    outRect.right = padding / 2
-                }
-            }
-
-            if (layoutParams.spanSize == gridLayoutManager.spanCount) {
-                outRect.left = 0
-                outRect.right = 0
-            }
-        }
-    }
-
     private fun setAppListDecoration() {
         binding.appList.apply {
             while (itemDecorationCount > 0) removeItemDecorationAt(0)
             when (layoutType) {
                 LayoutType.List -> Unit
 
-                LayoutType.Grid, LayoutType.GridCompact -> addItemDecoration(GridSpacingItemDecoration())
+                LayoutType.Grid, LayoutType.GridCompact -> addItemDecoration(GridSpacingItemDecoration(resources.getDimensionPixelSize(R.dimen.grid_padding)))
             }
         }
     }
@@ -202,23 +186,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        override fun onRequestChildFocus(parent : RecyclerView, state : RecyclerView.State, child : View, focused : View?) : Boolean {
+            binding.appBarLayout.setExpanded(false)
+            return super.onRequestChildFocus(parent, state, child, focused)
+        }
+
         override fun onFocusSearchFailed(focused : View, focusDirection : Int, recycler : RecyclerView.Recycler, state : RecyclerView.State) : View? {
             val nextFocus = super.onFocusSearchFailed(focused, focusDirection, recycler, state)
             when (focusDirection) {
                 View.FOCUS_DOWN -> {
-                    findContainingItemView(focused)?.let { focusedChild ->
-                        val current = binding.appList.indexOfChild(focusedChild)
-                        val currentSpanIndex = (focusedChild.layoutParams as LayoutParams).spanIndex
-                        for (i in current + 1 until binding.appList.size) {
-                            val candidate = getChildAt(i)!!
-                            // Return candidate when span index matches
-                            if (currentSpanIndex == (candidate.layoutParams as LayoutParams).spanIndex) return candidate
-                        }
-                        nextFocus?.let { if ((it.layoutParams as LayoutParams).spanIndex == currentSpanIndex) return nextFocus }
-
-                        binding.appBarLayout.setExpanded(false) // End of list, hide app bar, so bottom row is fully visible
-                        binding.appList.smoothScrollToPosition(adapter.itemCount)
-                    }
+                    return null
                 }
 
                 View.FOCUS_UP -> {
@@ -244,19 +221,46 @@ class MainActivity : AppCompatActivity() {
         binding.appList.layoutManager = CustomLayoutManager(gridSpan)
         setAppListDecoration()
 
-        if (settings.searchLocation.isEmpty()) documentPicker.launch(null)
+        if (appSettings.searchLocation.isEmpty()) documentPicker.launch(null)
     }
 
     private fun getDataItems() = mutableListOf<DataItem>().apply {
-        appEntries?.let { entries ->
-            val formats = formatFilter?.let { listOf(it) } ?: formatOrder
-            for (format in formats) {
-                entries[format]?.let {
-                    add(HeaderItem(format.name))
-                    it.forEach { entry -> add(AppItem(entry)) }
+        if (appSettings.groupByFormat) {
+            appEntries?.let { entries ->
+                val formats = formatFilter?.let { listOf(it) } ?: formatOrder
+                for (format in formats) {
+                    entries[format]?.let {
+                        add(HeaderItem(format.name))
+                        for (entry in sortGameList(it)) {
+                            add(AppItem(entry))
+                        }
+                    }
                 }
             }
+        } else {
+            val gameList = mutableListOf<AppEntry>()
+            appEntries?.let { entries ->
+                val formats = formatFilter?.let { listOf(it) } ?: formatOrder
+                for (format in formats) {
+                    entries[format]?.let {
+                        it.forEach { entry -> gameList.add(entry) }
+                    }
+                }
+            }
+            for (entry in sortGameList(gameList.toList())) {
+                add(AppItem(entry))
+            }
         }
+    }
+
+    private fun sortGameList(gameList : List<AppEntry>) : List<AppEntry> {
+        val sortedApps : MutableList<AppEntry> = mutableListOf<AppEntry>()
+        gameList.forEach { entry -> sortedApps.add(entry) }
+        when (appSettings.sortAppsBy) {
+            SortingOrder.AlphabeticalAsc.ordinal -> sortedApps.sortBy { it.name }
+            SortingOrder.AlphabeticalDesc.ordinal -> sortedApps.sortByDescending { it.name }
+        }
+        return sortedApps
     }
 
     private fun handleState(state : MainState) = when (state) {
@@ -278,10 +282,13 @@ class MainActivity : AppCompatActivity() {
     private fun selectStartGame(appItem : AppItem) {
         if (binding.swipeRefreshLayout.isRefreshing) return
 
-        if (settings.selectAction) {
+        if (appSettings.selectAction) {
             AppDialog.newInstance(appItem).show(supportFragmentManager, "game")
         } else if (appItem.loaderResult == LoaderResult.Success) {
-            startActivity(Intent(this, EmulationActivity::class.java).apply { data = appItem.uri; putExtra(EmulationActivity.ReturnToMainTag, true) })
+            startActivity(Intent(this, EmulationActivity::class.java).apply {
+                putExtra(AppItemTag, appItem)
+                putExtra(EmulationActivity.ReturnToMainTag, true)
+            })
         }
     }
 
@@ -292,8 +299,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadRoms(loadFromFile : Boolean) {
-        viewModel.loadRoms(this, loadFromFile, Uri.parse(settings.searchLocation), settings.systemLanguage)
-        settings.refreshRequired = false
+        viewModel.loadRoms(this, loadFromFile, Uri.parse(appSettings.searchLocation), EmulationSettings.global.systemLanguage)
+        appSettings.refreshRequired = false
     }
 
     private fun populateAdapter() {
@@ -307,8 +314,28 @@ class MainActivity : AppCompatActivity() {
         if (items.isEmpty()) adapter.setItems(listOf(HeaderViewItem(getString(R.string.no_rom))))
     }
 
+    override fun onStart() {
+        super.onStart()
+
+        onBackPressedDispatcher.addCallback(object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                binding.searchBar.apply {
+                    if (hasFocus() && text.isNotEmpty()) {
+                        text = ""
+                        clearFocus()
+                    } else {
+                        finish()
+                    }
+                }
+            }
+        })
+    }
+
     override fun onResume() {
         super.onResume()
+
+        // Try to return to normal GPU clocks upon resuming back to main activity, to avoid GPU being stuck at max clocks after a crash
+        GpuDriverHelper.forceMaxGpuClocks(false)
 
         var layoutTypeChanged = false
         for (appViewItem in adapter.allItems.filterIsInstance(AppViewItem::class.java)) {
@@ -323,17 +350,6 @@ class MainActivity : AppCompatActivity() {
         if (layoutTypeChanged) {
             setAppListDecoration()
             adapter.notifyItemRangeChanged(0, adapter.currentItems.size)
-        }
-    }
-
-    override fun onBackPressed() {
-        binding.searchBar.apply {
-            if (hasFocus() && text.isNotEmpty()) {
-                text = ""
-                clearFocus()
-            } else {
-                super.onBackPressed()
-            }
         }
     }
 }

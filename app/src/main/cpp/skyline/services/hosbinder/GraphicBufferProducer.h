@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 // Copyright © 2005 The Android Open Source Project
-// Copyright © 2019-2020 Ryujinx Team and Contributors
+// Copyright © 2019-2020 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #pragma once
 
@@ -11,7 +11,7 @@
 #include "native_window.h"
 
 namespace skyline::gpu {
-    class Texture;
+    class TextureView;
 }
 
 namespace skyline::service::nvdrv::core {
@@ -44,7 +44,8 @@ namespace skyline::service::hosbinder {
         u64 frameNumber{}; //!< The amount of frames that have been queued using this slot
         bool wasBufferRequested{}; //!< If GraphicBufferProducer::RequestBuffer has been called with this buffer
         bool isPreallocated{}; //!< If this slot's graphic buffer has been preallocated or attached
-        std::shared_ptr<gpu::Texture> texture{};
+        AndroidFence fence{};
+        std::shared_ptr<gpu::TextureView> texture{};
         std::unique_ptr<GraphicBuffer> graphicBuffer{};
     };
 
@@ -57,10 +58,11 @@ namespace skyline::service::hosbinder {
      * @url https://cs.android.com/android/platform/superproject/+/android-5.1.1_r38:frameworks/native/include/gui/BufferQueueCore.h
      * @url https://cs.android.com/android/platform/superproject/+/android-5.1.1_r38:frameworks/native/libs/gui/BufferQueueCore.cpp
      */
-    class GraphicBufferProducer {
+    class GraphicBufferProducer : public std::enable_shared_from_this<GraphicBufferProducer> {
       private:
         const DeviceState &state;
         std::mutex mutex; //!< Synchronizes access to the buffer queue
+        std::condition_variable freeCondition; //!< Used to wait for a free buffer slot
         constexpr static u8 MaxSlotCount{16}; //!< The maximum amount of buffer slots that a buffer queue can hold, Android supports 64 but they go unused for applications like games so we've lowered this to 16 (https://cs.android.com/android/platform/superproject/+/android-5.1.1_r38:frameworks/native/include/gui/BufferQueueDefs.h;l=29)
         std::array<BufferSlot, MaxSlotCount> queue;
         u8 activeSlotCount{}; //!< The amount of slots in the queue that can be dequeued
@@ -185,6 +187,7 @@ namespace skyline::service::hosbinder {
             SetSidebandStream = 12,
             AllocateBuffers = 13,
             SetPreallocatedBuffer = 14, //!< A transaction specific to HOS, see the implementation for a description of its functionality
+            GetBufferHistory = 17,
         };
 
         GraphicBufferProducer(const DeviceState &state, nvdrv::core::NvMap &nvmap);

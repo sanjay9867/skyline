@@ -18,7 +18,7 @@ namespace skyline::service::visrv {
         /**
          * @brief Specifies the method to scale up the layer content to its bounds
          */
-        enum class ScalingMode {
+        enum class ScalingMode : u64 {
             Freeze = 0,
             ScaleToLayer = 1,
             ScaleAndCrop = 2,
@@ -54,6 +54,11 @@ namespace skyline::service::visrv {
         Result GetManagerDisplayService(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @url https://switchbrew.org/wiki/Display_services#ListDisplays
+         */
+        Result ListDisplays(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Opens up a display using its name as the input
          * @url https://switchbrew.org/wiki/Display_services#OpenDisplay
          */
@@ -84,6 +89,18 @@ namespace skyline::service::visrv {
         Result SetLayerScalingMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @brief Draws an indirect layer into the supplied buffer
+         * @url https://switchbrew.org/wiki/Display_services#GetIndirectLayerImageMap
+         */
+        Result GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Gets the amount of memory required for an indirect layer
+         * @url https://switchbrew.org/wiki/Display_services#GetIndirectLayerImageRequiredMemoryInfo
+         */
+        Result GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Converts an arbitrary scaling mode to a VI scaling mode
          */
         Result ConvertScalingMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
@@ -99,6 +116,7 @@ namespace skyline::service::visrv {
           SFUNC(0x65, IApplicationDisplayService, GetSystemDisplayService),
           SFUNC(0x66, IApplicationDisplayService, GetManagerDisplayService),
           SFUNC(0x67, IApplicationDisplayService, GetIndirectDisplayTransactionService),
+          SFUNC(0x3E8, IApplicationDisplayService, ListDisplays),
           SFUNC(0x3F2, IApplicationDisplayService, OpenDisplay),
           SFUNC(0x3FC, IApplicationDisplayService, CloseDisplay),
           SFUNC(0x7E4, IApplicationDisplayService, OpenLayer),
@@ -106,6 +124,9 @@ namespace skyline::service::visrv {
           SFUNC_BASE(0x7EE, IApplicationDisplayService, IDisplayService, CreateStrayLayer),
           SFUNC_BASE(0x7EF, IApplicationDisplayService, IDisplayService, DestroyStrayLayer),
           SFUNC(0x835, IApplicationDisplayService, SetLayerScalingMode),
+          SFUNC(0x836, IApplicationDisplayService, ConvertScalingMode),
+          SFUNC(0x992, IApplicationDisplayService, GetIndirectLayerImageMap),
+          SFUNC(0x99C, IApplicationDisplayService, GetIndirectLayerImageRequiredMemoryInfo),
           SFUNC(0x1452, IApplicationDisplayService, GetDisplayVsyncEvent)
       )
     };

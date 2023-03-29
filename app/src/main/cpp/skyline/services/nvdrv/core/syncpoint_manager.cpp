@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
-// Copyright © 2019-2020 Ryujinx Team and Contributors
+// Copyright © 2019-2020 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #include <soc.h>
 #include "syncpoint_manager.h"
@@ -40,7 +40,7 @@ namespace skyline::service::nvdrv::core {
     }
 
     u32 SyncpointManager::AllocateSyncpoint(bool clientManaged) {
-        std::lock_guard lock(reservationLock);
+        std::scoped_lock lock{reservationLock};
         return ReserveSyncpoint(FindFreeSyncpoint(), clientManaged);
     }
 
@@ -79,7 +79,7 @@ namespace skyline::service::nvdrv::core {
         if (!syncpoints.at(id).reserved)
             throw exception("Cannot update an unreserved syncpoint!");
 
-        syncpoints.at(id).counterMin = state.soc->host1x.syncpoints.at(id).Load();
+        syncpoints.at(id).counterMin = state.soc->host1x.syncpoints.at(id).host.Load();
         return syncpoints.at(id).counterMin;
     }
 

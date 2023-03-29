@@ -2,21 +2,20 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/item_click_layout"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:foreground="?attr/selectableItemBackground"
+    android:focusable="true"
+    android:foreground="@drawable/rounded_selectable_item_background"
     android:orientation="vertical">
 
     <com.google.android.material.card.MaterialCardView
-        android:id="@+id/item_click_layout"
+        android:id="@+id/item_card"
+        style="@style/Widget.Material3.CardView.Elevated"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginStart="10dp"
-        android:layout_marginTop="10dp"
-        android:layout_marginEnd="10dp"
-        android:layout_marginBottom="10dp"
-        app:cardCornerRadius="16dp"
-        app:cardElevation="2dp">
+        android:layout_margin="10dp"
+        app:shapeAppearance="?attr/shapeAppearanceCornerLarge">
 
         <ImageView
             android:id="@+id/icon"
@@ -29,6 +28,7 @@
 
     <TextView
         android:id="@+id/text_title"
+        style="?attr/textAppearanceTitleSmall"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="10dp"
@@ -36,12 +36,23 @@
         android:ellipsize="marquee"
         android:marqueeRepeatLimit="marquee_forever"
         android:singleLine="true"
-        android:textColor="?android:attr/textColorPrimary"
-        android:textSize="12sp"
         tools:text="Title" />
 
     <TextView
-        android:id="@+id/text_subtitle"
+        android:id="@+id/text_version"
+        style="?attr/textAppearanceBodySmall"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:ellipsize="marquee"
+        android:marqueeRepeatLimit="marquee_forever"
+        android:singleLine="true"
+        tools:text="Version" />
+
+    <TextView
+        android:id="@+id/text_author"
+        style="?attr/textAppearanceBodySmall"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="10dp"
@@ -50,6 +61,5 @@
         android:ellipsize="marquee"
         android:marqueeRepeatLimit="marquee_forever"
         android:singleLine="true"
-        android:textSize="12sp"
-        tools:text="Subtitle" />
+        tools:text="Author" />
 </LinearLayout>

@@ -7,7 +7,7 @@
 
 #define MAP_MEMBER(returnType) template<typename VaType, VaType UnmappedVa, typename PaType, PaType UnmappedPa, bool PaContigSplit, size_t AddressSpaceBits, typename ExtraBlockInfo> requires AddressSpaceValid<VaType, AddressSpaceBits> returnType FlatAddressSpaceMap<VaType, UnmappedVa, PaType, UnmappedPa, PaContigSplit, AddressSpaceBits, ExtraBlockInfo>
 
-#define MM_MEMBER(returnType) template<typename VaType, VaType UnmappedVa, size_t AddressSpaceBits> requires AddressSpaceValid<VaType, AddressSpaceBits> returnType FlatMemoryManager<VaType, UnmappedVa, AddressSpaceBits>
+#define MM_MEMBER(returnType) template<typename VaType, VaType UnmappedVa, size_t AddressSpaceBits, size_t VaGranularityBits, size_t VaL2GranularityBits> requires AddressSpaceValid<VaType, AddressSpaceBits> returnType FlatMemoryManager<VaType, UnmappedVa, AddressSpaceBits, VaGranularityBits, VaL2GranularityBits>
 
 #define ALLOC_MEMBER(returnType) template<typename VaType, VaType UnmappedVa, size_t AddressSpaceBits> requires AddressSpaceValid<VaType, AddressSpaceBits> returnType FlatAllocator<VaType, UnmappedVa, AddressSpaceBits>
 
@@ -223,20 +223,11 @@ namespace skyline {
             unmapCallback(virt, size);
     }
 
-    MM_MEMBER()::FlatMemoryManager() {
-        sparseMap = static_cast<u8 *>(mmap(0, SparseMapSize, PROT_READ, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0));
-        if (!sparseMap)
-            throw exception("Failed to mmap sparse map!");
-    }
 
-    MM_MEMBER()::~FlatMemoryManager() {
-        munmap(sparseMap, SparseMapSize);
-    }
-
-    MM_MEMBER(std::vector<span<u8>>)::TranslateRange(VaType virt, VaType size) {
+    MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
         TRACE_EVENT("containers", "FlatMemoryManager::TranslateRange");
 
-        std::scoped_lock lock(this->blockMutex);
+        TranslatedAddressRange ranges;
 
         auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [] (auto virt, const auto &block) {
             return virt < block.virt;
@@ -247,18 +238,20 @@ namespace skyline {
         u8 *blockPhys{predecessor->phys + (virt - predecessor->virt)};
         VaType blockSize{std::min(successor->virt - virt, size)};
 
-        std::vector<span<u8>> ranges;
-
         while (size) {
-            // Return a zeroed out map to emulate sparse mappings
-            if (predecessor->extraInfo.sparseMapped) {
-                if (blockSize > SparseMapSize)
-                    throw exception("Size of the sparse map is too small to fit block of size: 0x{:X}", blockSize);
+            if (predecessor->phys) {
+                span cpuBlock{blockPhys, blockSize};
+                if (cpuAccessCallback)
+                    cpuAccessCallback(cpuBlock);
 
-                blockPhys = sparseMap;
+                // Batch contiguous ranges into one
+                if (!ranges.empty() && ranges.back().data() + ranges.back().size() == cpuBlock.data())
+                    ranges.back() = {ranges.back().data(), ranges.back().size() + cpuBlock.size()};
+                else
+                    ranges.push_back(cpuBlock);
+            } else {
+                ranges.push_back(span<u8>{static_cast<u8*>(nullptr), blockSize});
             }
-
-            ranges.push_back(span(blockPhys, blockSize));
 
             size -= blockSize;
 
@@ -272,10 +265,20 @@ namespace skyline {
         return ranges;
     }
 
-    MM_MEMBER(void)::Read(u8 *destination, VaType virt, VaType size) {
+    MM_MEMBER()::FlatMemoryManager() {
+        sparseMap = static_cast<u8 *>(mmap(0, SparseMapSize, PROT_READ, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0));
+        if (!sparseMap)
+            throw exception("Failed to mmap sparse map!");
+    }
+
+    MM_MEMBER()::~FlatMemoryManager() {
+        munmap(sparseMap, SparseMapSize);
+    }
+
+    MM_MEMBER(void)::Read(u8 *destination, VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
         TRACE_EVENT("containers", "FlatMemoryManager::Read");
 
-        std::scoped_lock lock(this->blockMutex);
+        std::shared_lock lock(this->blockMutex);
 
         auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [] (auto virt, const auto &block) {
             return virt < block.virt;
@@ -291,10 +294,14 @@ namespace skyline {
             if (predecessor->phys == nullptr) {
                 throw exception("Page fault at 0x{:X}", predecessor->virt);
             } else {
-                if (predecessor->extraInfo.sparseMapped) // Sparse mappings read all zeroes
+                if (predecessor->extraInfo.sparseMapped) { // Sparse mappings read all zeroes
                     std::memset(destination, 0, blockReadSize);
-                else
+                } else {
+                    if (cpuAccessCallback)
+                        cpuAccessCallback(span{blockPhys, blockReadSize});
+
                     std::memcpy(destination, blockPhys, blockReadSize);
+                }
             }
 
             destination += blockReadSize;
@@ -308,10 +315,10 @@ namespace skyline {
         }
     }
 
-    MM_MEMBER(void)::Write(VaType virt, u8 *source, VaType size) {
+    MM_MEMBER(void)::Write(VaType virt, u8 *source, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
         TRACE_EVENT("containers", "FlatMemoryManager::Write");
 
-        std::scoped_lock lock(this->blockMutex);
+        std::shared_lock lock(this->blockMutex);
 
         VaType virtEnd{virt + size};
 
@@ -329,8 +336,12 @@ namespace skyline {
             if (predecessor->phys == nullptr) {
                 throw exception("Page fault at 0x{:X}", predecessor->virt);
             } else {
-                if (!predecessor->extraInfo.sparseMapped) // Sparse mappings ignore writes
+                if (!predecessor->extraInfo.sparseMapped) { // Sparse mappings ignore writes
+                    if (cpuAccessCallback)
+                        cpuAccessCallback(span{blockPhys, blockWriteSize});
+
                     std::memcpy(blockPhys, source, blockWriteSize);
+                }
             }
 
             source += blockWriteSize;
@@ -342,7 +353,75 @@ namespace skyline {
                 blockWriteSize = std::min(successor->virt - predecessor->virt, size);
             }
         }
+    }
 
+    MM_MEMBER(void)::Copy(VaType dst, VaType src, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
+        TRACE_EVENT("containers", "FlatMemoryManager::Copy");
+
+        std::shared_lock lock(this->blockMutex);
+
+        VaType srcEnd{src + size};
+        VaType dstEnd{dst + size};
+
+        auto srcSuccessor{std::upper_bound(this->blocks.begin(), this->blocks.end(), src, [] (auto virt, const auto &block) {
+            return virt < block.virt;
+        })};
+
+        auto dstSuccessor{std::upper_bound(this->blocks.begin(), this->blocks.end(), dst, [] (auto virt, const auto &block) {
+            return virt < block.virt;
+        })};
+
+        auto srcPredecessor{std::prev(srcSuccessor)};
+        auto dstPredecessor{std::prev(dstSuccessor)};
+
+        u8 *srcBlockPhys{srcPredecessor->phys + (src - srcPredecessor->virt)};
+        u8 *dstBlockPhys{dstPredecessor->phys + (dst - dstPredecessor->virt)};
+
+        VaType srcBlockRemainingSize{srcSuccessor->virt - src};
+        VaType dstBlockRemainingSize{dstSuccessor->virt - dst};
+
+        VaType blockCopySize{std::min({srcBlockRemainingSize, dstBlockRemainingSize, size})};
+
+        // Writes may span across multiple individual blocks
+        while (size) {
+            if (srcPredecessor->phys == nullptr) {
+                throw exception("Page fault at 0x{:X}", srcPredecessor->virt);
+            } else if (dstPredecessor->phys == nullptr) {
+                throw exception("Page fault at 0x{:X}", dstPredecessor->virt);
+            } else { [[likely]]
+                    if (srcPredecessor->extraInfo.sparseMapped) {
+                        std::memset(dstBlockPhys, 0, blockCopySize);
+                    } else [[likely]] {
+                        if (cpuAccessCallback) {
+                            cpuAccessCallback(span{dstBlockPhys, blockCopySize});
+                            cpuAccessCallback(span{srcBlockPhys, blockCopySize});
+                        }
+
+                        std::memcpy(dstBlockPhys, srcBlockPhys, blockCopySize);
+                    }
+            }
+
+            dstBlockPhys += blockCopySize;
+            srcBlockPhys += blockCopySize;
+            size -= blockCopySize;
+            srcBlockRemainingSize -= blockCopySize;
+            dstBlockRemainingSize -= blockCopySize;
+
+            if (size) {
+                if (!srcBlockRemainingSize) {
+                    srcPredecessor = srcSuccessor++;
+                    srcBlockPhys = srcPredecessor->phys;
+                    srcBlockRemainingSize = srcSuccessor->virt - srcPredecessor->virt;
+                    blockCopySize = std::min({srcBlockRemainingSize, dstBlockRemainingSize, size});
+                }
+                if (!dstBlockRemainingSize) {
+                    dstPredecessor = dstSuccessor++;
+                    dstBlockPhys = dstPredecessor->phys;
+                    dstBlockRemainingSize = dstSuccessor->virt - dstPredecessor->virt;
+                    blockCopySize = std::min({srcBlockRemainingSize, dstBlockRemainingSize, size});
+                }
+            }
+        }
     }
 
     ALLOC_MEMBER()::FlatAllocator(VaType vaStart, VaType vaLimit) : Base(vaLimit), vaStart(vaStart), currentLinearAllocEnd(vaStart) {}
@@ -391,7 +470,7 @@ namespace skyline {
             if (this->blocks.size() <= 2)
                 throw exception("Unexpected allocator state!");
 
-            auto searchPredecessor{this->blocks.begin()};
+            auto searchPredecessor{std::next(this->blocks.begin())};
             auto searchSuccessor{std::next(searchPredecessor)};
 
             while (searchSuccessor != this->blocks.end() &&
@@ -411,10 +490,12 @@ namespace skyline {
     }
 
     ALLOC_MEMBER(void)::AllocateFixed(VaType virt, VaType size) {
-        this->Map(virt, true, size);
+        std::scoped_lock lock(this->blockMutex);
+        this->MapLocked(virt, true, size, {});
     }
 
     ALLOC_MEMBER(void)::Free(VaType virt, VaType size) {
-        this->Unmap(virt, size);
+        std::scoped_lock lock(this->blockMutex);
+        this->UnmapLocked(virt, size);
     }
 }

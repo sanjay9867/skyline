@@ -12,6 +12,7 @@ import android.os.Looper
 import android.util.TypedValue
 import android.view.*
 import android.view.animation.LinearInterpolator
+import androidx.fragment.app.commit
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import emu.skyline.R
@@ -29,7 +30,7 @@ import kotlin.math.max
  *
  * @param item This is used to hold the [ControllerStickViewItem] between instances
  */
-class StickDialog @JvmOverloads constructor(val item : ControllerStickViewItem? = null) : BottomSheetDialogFragment() {
+class StickDialog @JvmOverloads constructor(val item : ControllerStickViewItem? = null, private val nextDialog : BottomSheetDialogFragment? = null) : BottomSheetDialogFragment() {
     /**
      * This enumerates all of the stages this dialog can be in
      */
@@ -80,6 +81,17 @@ class StickDialog @JvmOverloads constructor(val item : ControllerStickViewItem? 
 
         val behavior = BottomSheetBehavior.from(requireView().parent as View)
         behavior.state = BottomSheetBehavior.STATE_EXPANDED
+    }
+
+    private fun gotoNextOrDismiss() {
+        if (nextDialog != null) {
+            parentFragmentManager.commit {
+                remove(this@StickDialog)
+                add(nextDialog, null)
+            }
+        } else {
+            dismiss()
+        }
     }
 
     /**
@@ -218,6 +230,8 @@ class StickDialog @JvmOverloads constructor(val item : ControllerStickViewItem? 
             binding.stickNext.text = getString(if (ordinal + 1 == size) R.string.done else R.string.next)
 
             updateAnimation()
+        } else if (ordinal == size) {
+            gotoNextOrDismiss()
         } else {
             dismiss()
         }
@@ -225,7 +239,6 @@ class StickDialog @JvmOverloads constructor(val item : ControllerStickViewItem? 
 
     override fun onViewCreated(view : View, savedInstanceState : Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        view.setBackgroundColor(requireContext().getColor(R.color.backgroundColor))
 
         if (item != null && context is ControllerActivity) {
             val context = requireContext() as ControllerActivity
@@ -254,7 +267,7 @@ class StickDialog @JvmOverloads constructor(val item : ControllerStickViewItem? 
 
                 item.update()
 
-                dismiss()
+                gotoNextOrDismiss()
             }
 
             // Ensure that layout animations are proper

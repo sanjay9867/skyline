@@ -11,8 +11,11 @@ namespace skyline::service::am {
         messageEvent->Signal();
     }
 
-    ICommonStateGetter::ICommonStateGetter(const DeviceState &state, ServiceManager &manager) : messageEvent(std::make_shared<type::KEvent>(state, false)), BaseService(state, manager) {
-        operationMode = static_cast<OperationMode>(state.settings->operationMode);
+    ICommonStateGetter::ICommonStateGetter(const DeviceState &state, ServiceManager &manager)
+        : BaseService(state, manager),
+          messageEvent(std::make_shared<type::KEvent>(state, false)),
+          defaultDisplayResolutionChangeEvent(std::make_shared<type::KEvent>(state, false)) {
+        operationMode = static_cast<OperationMode>(*state.settings->isDocked);
         Logger::Info("Switch to mode: {}", static_cast<bool>(operationMode) ? "Docked" : "Handheld");
         QueueMessage(Message::FocusStateChange);
     }
@@ -52,6 +55,11 @@ namespace skyline::service::am {
         return {};
     }
 
+    Result ICommonStateGetter::IsVrModeEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(false);
+        return {};
+    }
+
     Result ICommonStateGetter::GetDefaultDisplayResolution(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         if (operationMode == OperationMode::Handheld) {
             constexpr u16 HandheldResolutionW{1280};
@@ -64,6 +72,34 @@ namespace skyline::service::am {
             response.Push<u32>(DockedResolutionW);
             response.Push<u32>(DockedResolutionH);
         }
+        return {};
+    }
+
+    Result ICommonStateGetter::GetDefaultDisplayResolutionChangeEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // TODO: Implement properly when we support listeners for settings
+        auto handle{state.process->InsertItem(defaultDisplayResolutionChangeEvent)};
+        Logger::Debug("Default Display Resolution Change Event Handle: 0x{:X}", handle);
+
+        response.copyHandles.push_back(handle);
+        return {};
+    }
+
+    Result ICommonStateGetter::SetCpuBoostMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        cpuBoostMode = request.Pop<CpuBoostMode>();
+        switch (cpuBoostMode) {
+            case CpuBoostMode::Normal:
+            case CpuBoostMode::FastLoad:
+            case CpuBoostMode::PowerSaving:
+                Logger::Info("Set CPU boost mode to {}", ToString(cpuBoostMode));
+                return {};
+            default:
+                Logger::Error("Unknown CPU boost mode value: 0x{:X}", cpuBoostMode);
+                return result::InvalidParameters;
+        }
+        return {};
+    }
+
+    Result ICommonStateGetter::SetRequestExitToLibraryAppletAtExecuteNextProgramEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         return {};
     }
 }

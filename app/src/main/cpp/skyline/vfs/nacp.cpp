@@ -29,6 +29,16 @@ namespace skyline::vfs {
         return std::string(applicationName.as_string(true));
     }
 
+    std::string NACP::GetApplicationVersion() {
+        auto applicationPublisher{span(nacpContents.displayVersion)};
+        return std::string(applicationPublisher.as_string(true));
+    }
+
+    std::string NACP::GetSaveDataOwnerId() {
+        auto applicationTitleId{nacpContents.saveDataOwnerId};
+        return fmt::format("{:016X}", applicationTitleId);
+    }
+
     std::string NACP::GetApplicationPublisher(language::ApplicationLanguage language) {
         auto applicationPublisher{span(nacpContents.titleEntries.at(static_cast<size_t>(language)).applicationPublisher)};
         return std::string(applicationPublisher.as_string(true));

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
-// Copyright © 2019-2020 Ryujinx Team and Contributors
+// Copyright © 2019-2020 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #include <soc.h>
 #include <services/nvdrv/devices/deserialisation/deserialisation.h>
@@ -11,21 +11,19 @@ namespace skyline::service::nvdrv::device::nvhost {
 
     void Ctrl::SyncpointEvent::Signal() {
         // We should only signal the KEvent if the event is actively being waited on
-        if (state.exchange(State::Signalling) == State::Waiting)
+        if (state.exchange(State::Signalled) == State::Waiting)
             event->Signal();
-
-        state = State::Signalled;
     }
 
     void Ctrl::SyncpointEvent::Cancel(soc::host1x::Host1x &host1x) {
-        host1x.syncpoints.at(fence.id).DeregisterWaiter(waiterHandle);
+        host1x.syncpoints.at(fence.id).host.DeregisterWaiter(waiterHandle);
         waiterHandle = {};
     }
 
     void Ctrl::SyncpointEvent::RegisterWaiter(soc::host1x::Host1x &host1x, const Fence &pFence) {
         fence = pFence;
         state = State::Waiting;
-        waiterHandle = host1x.syncpoints.at(fence.id).RegisterWaiter(fence.threshold, [this] { Signal(); });
+        waiterHandle = host1x.syncpoints.at(fence.id).host.RegisterWaiter(fence.threshold, [this] { Signal(); });
     }
 
     bool Ctrl::SyncpointEvent::IsInUse() {
@@ -102,7 +100,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         if (!timeout)
             return PosixResult::TryAgain;
 
-        std::lock_guard lock(syncpointEventMutex);
+        std::scoped_lock lock{syncpointEventMutex};
 
         u32 slot = [&]() {
             if (allocate) {
@@ -165,7 +163,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         if (slot >= SyncpointEventCount)
             return PosixResult::InvalidArgument;
 
-        std::lock_guard lock(syncpointEventMutex);
+        std::scoped_lock lock{syncpointEventMutex};
 
         auto &event{syncpointEvents[slot]};
         if (!event)
@@ -197,7 +195,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         if (slot >= SyncpointEventCount)
             return PosixResult::InvalidArgument;
 
-        std::lock_guard lock(syncpointEventMutex);
+        std::scoped_lock lock{syncpointEventMutex};
 
         auto &event{syncpointEvents[slot]};
         if (event) // Recreate event if it already exists
@@ -212,7 +210,7 @@ namespace skyline::service::nvdrv::device::nvhost {
     PosixResult Ctrl::SyncpointFreeEvent(In<u32> slot) {
         Logger::Debug("slot: {}", slot);
 
-        std::lock_guard lock(syncpointEventMutex);
+        std::scoped_lock lock{syncpointEventMutex};
         return SyncpointFreeEventLocked(slot);
     }
 
@@ -222,7 +220,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         auto err{PosixResult::Success};
 
         // Avoid repeated locks/unlocks by just locking now
-        std::lock_guard lock(syncpointEventMutex);
+        std::scoped_lock lock{syncpointEventMutex};
 
         for (u32 i{}; i < std::numeric_limits<u64>::digits; i++)
             if (bitmask & (1ULL << i))
@@ -242,7 +240,7 @@ namespace skyline::service::nvdrv::device::nvhost {
 
         u32 syncpointId{value.eventAllocated ? static_cast<u32>(value.syncpointIdForAllocation) : value.syncpointId};
 
-        std::lock_guard lock(syncpointEventMutex);
+        std::scoped_lock lock{syncpointEventMutex};
 
         auto &event{syncpointEvents[slot]};
         if (event && event->fence.id == syncpointId)

@@ -6,31 +6,61 @@
 package emu.skyline
 
 import android.annotation.SuppressLint
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.AssetManager
+import android.content.res.Configuration
 import android.graphics.PointF
+import android.graphics.drawable.Icon
+import android.hardware.display.DisplayManager
 import android.os.*
 import android.util.Log
 import android.util.Rational
 import android.view.*
+import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.getSystemService
 import androidx.core.view.isGone
 import androidx.core.view.isInvisible
+import androidx.core.view.updateMargins
+import androidx.fragment.app.FragmentTransaction
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dagger.hilt.android.AndroidEntryPoint
+import emu.skyline.BuildConfig
+import emu.skyline.applet.swkbd.SoftwareKeyboardConfig
+import emu.skyline.applet.swkbd.SoftwareKeyboardDialog
+import emu.skyline.data.AppItem
+import emu.skyline.data.AppItemTag
 import emu.skyline.databinding.EmuActivityBinding
 import emu.skyline.input.*
+import emu.skyline.loader.RomFile
 import emu.skyline.loader.getRomFormat
-import emu.skyline.utils.Settings
-import java.io.File
+import emu.skyline.settings.AppSettings
+import emu.skyline.settings.EmulationSettings
+import emu.skyline.settings.NativeSettings
+import emu.skyline.utils.ByteBufferSerializable
+import emu.skyline.utils.GpuDriverHelper
+import emu.skyline.utils.serializable
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.FutureTask
 import javax.inject.Inject
 import kotlin.math.abs
 
+private const val ActionPause = "${BuildConfig.APPLICATION_ID}.ACTION_EMULATOR_PAUSE"
+private const val ActionMute = "${BuildConfig.APPLICATION_ID}.ACTION_EMULATOR_MUTE"
+
 @AndroidEntryPoint
-class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTouchListener {
+class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTouchListener, DisplayManager.DisplayListener {
     companion object {
         private val Tag = EmulationActivity::class.java.simpleName
-        val ReturnToMainTag = "returnToMain"
+        const val ReturnToMainTag = "returnToMain"
 
         /**
          * The Kotlin thread on which emulation code executes
@@ -39,6 +69,11 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     private val binding by lazy { EmuActivityBinding.inflate(layoutInflater) }
+
+    /**
+     * The [AppItem] of the app that is being emulated
+     */
+    lateinit var item : AppItem
 
     /**
      * A map of [Vibrator]s that correspond to [InputManager.controllers]
@@ -54,13 +89,28 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     /**
      * If the activity should return to [MainActivity] or just call [finishAffinity]
      */
-    var returnToMain : Boolean = false
+    private var returnToMain : Boolean = false
+
+    /**
+     * The desired refresh rate to present at in Hz
+     */
+    private var desiredRefreshRate = 60f
+
+    private var isEmulatorPaused = false
+
+    private lateinit var pictureInPictureParamsBuilder : PictureInPictureParams.Builder
 
     @Inject
-    lateinit var settings : Settings
+    lateinit var appSettings : AppSettings
+
+    lateinit var emulationSettings : EmulationSettings
 
     @Inject
     lateinit var inputManager : InputManager
+
+    lateinit var inputHandler : InputHandler
+
+    private var gameSurface : Surface? = null
 
     /**
      * This is the entry point into the emulation code for libskyline
@@ -68,11 +118,13 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * @param romUri The URI of the ROM as a string, used to print out in the logs
      * @param romType The type of the ROM as an enum value
      * @param romFd The file descriptor of the ROM object
-     * @param preferenceFd The file descriptor of the Preference XML
-     * @param appFilesPath The full path to the app files directory
+     * @param nativeSettings The settings to be used by libskyline
+     * @param publicAppFilesPath The full path to the public app files directory
+     * @param privateAppFilesPath The full path to the private app files directory
+     * @param nativeLibraryPath The full path to the app native library directory
      * @param assetManager The asset manager used for accessing app assets
      */
-    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, preferenceFd : Int, language : Int, appFilesPath : String, assetManager : AssetManager)
+    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
 
     /**
      * @param join If the function should only return after all the threads join or immediately
@@ -103,76 +155,38 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private external fun updatePerformanceStatistics()
 
     /**
-     * This initializes a guest controller in libskyline
-     *
-     * @param index The arbitrary index of the controller, this is to handle matching with a partner Joy-Con
-     * @param type The type of the host controller
-     * @param partnerIndex The index of a partner Joy-Con if there is one
-     * @note This is blocking and will stall till input has been initialized on the guest
-     */
-    private external fun setController(index : Int, type : Int, partnerIndex : Int = -1)
-
-    /**
-     * This flushes the controller updates on the guest
-     *
-     * @note This is blocking and will stall till input has been initialized on the guest
-     */
-    private external fun updateControllers()
-
-    /**
-     * This sets the state of the buttons specified in the mask on a specific controller
-     *
-     * @param index The index of the controller this is directed to
-     * @param mask The mask of the button that are being set
-     * @param pressed If the buttons are being pressed or released
-     */
-    private external fun setButtonState(index : Int, mask : Long, pressed : Boolean)
-
-    /**
-     * This sets the value of a specific axis on a specific controller
-     *
-     * @param index The index of the controller this is directed to
-     * @param axis The ID of the axis that is being modified
-     * @param value The value to set the axis to
-     */
-    private external fun setAxisValue(index : Int, axis : Int, value : Int)
-
-    /**
-     * This sets the values of the points on the guest touch-screen
-     *
-     * @param points An array of skyline::input::TouchScreenPoint in C++ represented as integers
-     */
-    private external fun setTouchState(points : IntArray)
-
-    /**
-     * This initializes all of the controllers from [InputManager] on the guest
+     * @see [InputHandler.initializeControllers]
      */
     @Suppress("unused")
     private fun initializeControllers() {
-        for (controller in inputManager.controllers.values) {
-            if (controller.type != ControllerType.None) {
-                val type = when (controller.type) {
-                    ControllerType.None -> throw IllegalArgumentException()
-                    ControllerType.HandheldProController -> if (settings.operationMode) ControllerType.ProController.id else ControllerType.HandheldProController.id
-                    ControllerType.ProController, ControllerType.JoyConLeft, ControllerType.JoyConRight -> controller.type.id
-                }
+        inputHandler.initializeControllers()
+        inputHandler.initialiseMotionSensors(this)
+    }
 
-                val partnerIndex = when (controller) {
-                    is JoyConLeftController -> controller.partnerId
-                    is JoyConRightController -> controller.partnerId
-                    else -> null
-                }
-
-                setController(controller.id, type, partnerIndex ?: -1)
-            }
+    /**
+     * Forces a 60Hz refresh rate for the primary display when [enable] is true, otherwise selects the highest available refresh rate
+     */
+    private fun force60HzRefreshRate(enable : Boolean) {
+        // Hack for MIUI devices since they don't support the standard Android APIs
+        try {
+            val setFpsIntent = Intent("com.miui.powerkeeper.SET_ACTIVITY_FPS")
+            setFpsIntent.putExtra("package_name", "skyline.emu")
+            setFpsIntent.putExtra("isEnter", enable)
+            sendBroadcast(setFpsIntent)
+        } catch (_ : Exception) {
         }
 
-        updateControllers()
+        @Suppress("DEPRECATION") val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display!! else windowManager.defaultDisplay
+        if (enable)
+            display?.supportedModes?.minByOrNull { abs(it.refreshRate - 60f) }?.let { window.attributes.preferredDisplayModeId = it.modeId }
+        else
+            display?.supportedModes?.maxByOrNull { it.refreshRate }?.let { window.attributes.preferredDisplayModeId = it.modeId }
     }
 
     /**
      * Return from emulation to either [MainActivity] or the activity on the back stack
      */
+    @SuppressWarnings("WeakerAccess")
     fun returnFromEmulation() {
         if (shouldFinish) {
             runOnUiThread {
@@ -180,7 +194,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                     shouldFinish = false
                     if (returnToMain)
                         startActivity(Intent(applicationContext, MainActivity::class.java).setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
-                    finishAffinity()
+                    Process.killProcess(Process.myPid())
                 }
             }
         }
@@ -205,45 +219,83 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         shouldFinish = true
         returnToMain = intent.getBooleanExtra(ReturnToMainTag, false)
 
-        val rom = intent.data!!
-        val romType = getRomFormat(rom, contentResolver).ordinal
-        val romFd = contentResolver.openFileDescriptor(rom, "r")!!
-        val preferenceFd = ParcelFileDescriptor.open(File("${applicationInfo.dataDir}/shared_prefs/${applicationInfo.packageName}_preferences.xml"), ParcelFileDescriptor.MODE_READ_WRITE)
+        val rom = item.uri
+        val romType = item.format.ordinal
 
+        @SuppressLint("Recycle")
+        val romFd = contentResolver.openFileDescriptor(rom, "r")!!
+
+        GpuDriverHelper.ensureFileRedirectDir(this)
         emulationThread = Thread {
-            executeApplication(rom.toString(), romType, romFd.detachFd(), preferenceFd.detachFd(), settings.systemLanguage, applicationContext.filesDir.canonicalPath + "/", assets)
+            executeApplication(rom.toString(), romType, romFd.detachFd(), NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
             returnFromEmulation()
         }
 
         emulationThread!!.start()
     }
 
-    override fun onBackPressed() {
-        returnFromEmulation()
+    /**
+     * Populates the [item] member with data from the intent
+     */
+    private fun populateAppItem() {
+        val intentItem = intent.serializable(AppItemTag) as AppItem?
+        if (intentItem != null) {
+            item = intentItem
+            return
+        }
+
+        // The intent did not contain an app item, fall back to the data URI
+        val uri = intent.data!!
+        val romFormat = getRomFormat(uri, contentResolver)
+        val romFile = RomFile(this, romFormat, uri, EmulationSettings.global.systemLanguage)
+
+        item = AppItem(romFile.takeIf { it.valid }!!.appEntry)
     }
 
     @SuppressLint("SetTextI18n", "ClickableViewAccessibility")
     override fun onCreate(savedInstanceState : Bundle?) {
         super.onCreate(savedInstanceState)
+        populateAppItem()
+        emulationSettings = EmulationSettings.forEmulation(item.titleId ?: item.key())
 
+        requestedOrientation = emulationSettings.orientation
+        window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        inputHandler = InputHandler(inputManager, emulationSettings)
         setContentView(binding.root)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.insetsController?.hide(WindowInsets.Type.navigationBars() or WindowInsets.Type.systemBars() or WindowInsets.Type.systemGestures() or WindowInsets.Type.statusBars())
-            window.insetsController?.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            // Android might not allow child views to overlap the system bars
+            // Override this behavior and force content to extend into the cutout area
+            window.setDecorFitsSystemWindows(false)
+
+            window.insetsController?.let {
+                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                it.hide(WindowInsets.Type.systemBars())
+            }
         }
+
+        if (emulationSettings.respectDisplayCutout) {
+            binding.perfStats.setOnApplyWindowInsetsListener(insetsOrMarginHandler)
+            binding.onScreenControllerToggle.setOnApplyWindowInsetsListener(insetsOrMarginHandler)
+        }
+
+        pictureInPictureParamsBuilder = getPictureInPictureBuilder()
+        setPictureInPictureParams(pictureInPictureParamsBuilder.build())
 
         binding.gameView.holder.addCallback(this)
 
         binding.gameView.setAspectRatio(
-            when (settings.aspectRatio) {
+            when (emulationSettings.aspectRatio) {
                 0 -> Rational(16, 9)
                 1 -> Rational(21, 9)
                 else -> null
             }
         )
 
-        if (settings.perfStats) {
+        if (emulationSettings.perfStats) {
+            if (emulationSettings.disableFrameThrottling)
+                binding.perfStats.setTextColor(getColor(R.color.colorPerfStatsSecondary))
+
             binding.perfStats.apply {
                 postDelayed(object : Runnable {
                     override fun run() {
@@ -255,23 +307,22 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             }
         }
 
-        @Suppress("DEPRECATION") val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display!! else windowManager.defaultDisplay
-        if (settings.maxRefreshRate)
-            display?.supportedModes?.maxByOrNull { it.refreshRate * it.physicalHeight * it.physicalWidth }?.let { window.attributes.preferredDisplayModeId = it.modeId }
-        else
-            display?.supportedModes?.minByOrNull { abs(it.refreshRate - 60f) }?.let { window.attributes.preferredDisplayModeId = it.modeId }
+        force60HzRefreshRate(!emulationSettings.maxRefreshRate)
+        getSystemService<DisplayManager>()?.registerDisplayListener(this, null)
+
+        if (!emulationSettings.isGlobal && emulationSettings.useCustomSettings)
+            Toast.makeText(this, getString(R.string.per_game_settings_active_message), Toast.LENGTH_SHORT).show()
 
         binding.gameView.setOnTouchListener(this)
 
         // Hide on screen controls when first controller is not set
         binding.onScreenControllerView.apply {
-            inputManager.controllers[0]!!.type.let {
-                controllerType = it
-                isGone = it == ControllerType.None || !settings.onScreenControl
-            }
+            controllerType = inputHandler.getFirstControllerType()
+            isGone = controllerType == ControllerType.None || !appSettings.onScreenControl
             setOnButtonStateChangedListener(::onButtonStateChanged)
             setOnStickStateChangedListener(::onStickStateChanged)
-            recenterSticks = settings.onScreenControlRecenterSticks
+            hapticFeedback = appSettings.onScreenControl && appSettings.onScreenControlFeedback
+            recenterSticks = appSettings.onScreenControlRecenterSticks
         }
 
         binding.onScreenControllerToggle.apply {
@@ -279,21 +330,64 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             setOnClickListener { binding.onScreenControllerView.isInvisible = !binding.onScreenControllerView.isInvisible }
         }
 
+        binding.onScreenPauseToggle.apply {
+            isGone = binding.onScreenControllerView.isGone
+            setOnClickListener {
+                if (isEmulatorPaused) {
+                    resumeEmulator()
+                    binding.onScreenPauseToggle.setImageResource(R.drawable.ic_pause)
+                } else {
+                    pauseEmulator()
+                    binding.onScreenPauseToggle.setImageResource(R.drawable.ic_play)
+                }
+            }
+        }
+
         executeApplication(intent!!)
+    }
+
+    @SuppressWarnings("WeakerAccess")
+    fun pauseEmulator() {
+        if (isEmulatorPaused) return
+        setSurface(null)
+        changeAudioStatus(false)
+        isEmulatorPaused = true
+    }
+
+    @SuppressWarnings("WeakerAccess")
+    fun resumeEmulator() {
+        if (!isEmulatorPaused) return
+        gameSurface?.let { setSurface(it) }
+        if (!emulationSettings.isAudioOutputDisabled)
+            changeAudioStatus(true)
+        isEmulatorPaused = false
     }
 
     override fun onPause() {
         super.onPause()
 
-        changeAudioStatus(false)
+        if (emulationSettings.forceMaxGpuClocks)
+            GpuDriverHelper.forceMaxGpuClocks(false)
+
+        pauseEmulator()
+    }
+
+    override fun onStart() {
+        super.onStart()
+
+        onBackPressedDispatcher.addCallback(object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                returnFromEmulation()
+            }
+        })
     }
 
     override fun onResume() {
         super.onResume()
 
-        changeAudioStatus(true)
+        resumeEmulator()
 
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                     or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
@@ -301,6 +395,74 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                     or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                     or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                     or View.SYSTEM_UI_FLAG_FULLSCREEN)
+        }
+    }
+
+    private fun getPictureInPictureBuilder() : PictureInPictureParams.Builder {
+        val pictureInPictureParamsBuilder = PictureInPictureParams.Builder()
+
+        val pictureInPictureActions : MutableList<RemoteAction> = mutableListOf()
+        val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+
+        val pauseIcon = Icon.createWithResource(this, R.drawable.ic_pause)
+        val pausePendingIntent = PendingIntent.getBroadcast(this, R.drawable.ic_pause, Intent(ActionPause), pendingFlags)
+        val pauseRemoteAction = RemoteAction(pauseIcon, getString(R.string.pause), getString(R.string.pause), pausePendingIntent)
+        pictureInPictureActions.add(pauseRemoteAction)
+
+        val muteIcon = Icon.createWithResource(this, R.drawable.ic_volume_mute)
+        val mutePendingIntent = PendingIntent.getBroadcast(this, R.drawable.ic_volume_mute, Intent(ActionMute), pendingFlags)
+        val muteRemoteAction = RemoteAction(muteIcon, getString(R.string.mute), getString(R.string.mute), mutePendingIntent)
+        pictureInPictureActions.add(muteRemoteAction)
+
+        pictureInPictureParamsBuilder.setActions(pictureInPictureActions)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+            pictureInPictureParamsBuilder.setAutoEnterEnabled(true)
+
+        setPictureInPictureParams(pictureInPictureParamsBuilder.build())
+
+        return pictureInPictureParamsBuilder
+    }
+
+    private var pictureInPictureReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context : Context?, intent : Intent) {
+            if (intent.action == ActionPause)
+                pauseEmulator()
+            else if (intent.action == ActionMute)
+                changeAudioStatus(false)
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+
+            IntentFilter().apply {
+                addAction(ActionPause)
+                addAction(ActionMute)
+            }.also {
+                registerReceiver(pictureInPictureReceiver, it)
+            }
+
+            binding.onScreenControllerView.isGone = true
+            binding.onScreenControllerToggle.isGone = true
+            binding.onScreenPauseToggle.isGone = true
+        } else {
+            try {
+                unregisterReceiver(pictureInPictureReceiver)
+            } catch (ignored : Exception) { }
+
+            resumeEmulator()
+            
+            binding.onScreenControllerView.apply {
+                controllerType = inputHandler.getFirstControllerType()
+                isGone = controllerType == ControllerType.None || !appSettings.onScreenControl
+            }
+            binding.onScreenControllerToggle.apply {
+                isGone = binding.onScreenControllerView.isGone
+            }
+            binding.onScreenPauseToggle.apply {
+                isGone = binding.onScreenControllerView.isGone
+            }
         }
     }
 
@@ -315,9 +477,20 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
     }
 
+    override fun onUserLeaveHint() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && !isInPictureInPictureMode)
+            enterPictureInPictureMode(pictureInPictureParamsBuilder.build())
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         shouldFinish = false
+
+        // Stop forcing 60Hz on exit to allow the skyline UI to run at high refresh rates
+        getSystemService<DisplayManager>()?.unregisterDisplayListener(this)
+        force60HzRefreshRate(false)
+        if (emulationSettings.forceMaxGpuClocks)
+            GpuDriverHelper.forceMaxGpuClocks(false)
 
         stopEmulation(false)
         vibrators.forEach { (_, vibrator) -> vibrator.cancel() }
@@ -326,9 +499,16 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     override fun surfaceCreated(holder : SurfaceHolder) {
         Log.d(Tag, "surfaceCreated Holder: $holder")
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+        // Note: We need FRAME_RATE_COMPATIBILITY_FIXED_SOURCE as there will be a degradation of user experience with FRAME_RATE_COMPATIBILITY_DEFAULT due to game speed alterations when the frame rate doesn't match the display refresh rate
+            holder.surface.setFrameRate(desiredRefreshRate, if (emulationSettings.maxRefreshRate) Surface.FRAME_RATE_COMPATIBILITY_DEFAULT else Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+
         while (emulationThread!!.isAlive)
-            if (setSurface(holder.surface))
+            if (setSurface(holder.surface)) {
+                gameSurface = holder.surface
                 return
+            }
     }
 
     /**
@@ -336,135 +516,38 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      */
     override fun surfaceChanged(holder : SurfaceHolder, format : Int, width : Int, height : Int) {
         Log.d(Tag, "surfaceChanged Holder: $holder, Format: $format, Width: $width, Height: $height")
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+            holder.surface.setFrameRate(desiredRefreshRate, if (emulationSettings.maxRefreshRate) Surface.FRAME_RATE_COMPATIBILITY_DEFAULT else Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
     }
 
     override fun surfaceDestroyed(holder : SurfaceHolder) {
         Log.d(Tag, "surfaceDestroyed Holder: $holder")
         while (emulationThread!!.isAlive)
-            if (setSurface(null))
+            if (setSurface(null)) {
+                gameSurface = null
                 return
+            }
     }
 
-    /**
-     * This handles translating any [KeyHostEvent]s to a [GuestEvent] that is passed into libskyline
-     */
     override fun dispatchKeyEvent(event : KeyEvent) : Boolean {
-        if (event.repeatCount != 0)
-            return super.dispatchKeyEvent(event)
-
-        val action = when (event.action) {
-            KeyEvent.ACTION_DOWN -> ButtonState.Pressed
-            KeyEvent.ACTION_UP -> ButtonState.Released
-            else -> return super.dispatchKeyEvent(event)
-        }
-
-        return when (val guestEvent = inputManager.eventMap[KeyHostEvent(event.device.descriptor, event.keyCode)]) {
-            is ButtonGuestEvent -> {
-                if (guestEvent.button != ButtonId.Menu)
-                    setButtonState(guestEvent.id, guestEvent.button.value(), action.state)
-                true
-            }
-
-            is AxisGuestEvent -> {
-                setAxisValue(guestEvent.id, guestEvent.axis.ordinal, (if (action == ButtonState.Pressed) if (guestEvent.polarity) Short.MAX_VALUE else Short.MIN_VALUE else 0).toInt())
-                true
-            }
-
-            else -> super.dispatchKeyEvent(event)
-        }
+        return if (inputHandler.handleKeyEvent(event)) true else super.dispatchKeyEvent(event)
     }
 
-    /**
-     * The last value of the axes so the stagnant axes can be eliminated to not wastefully look them up
-     */
-    private val axesHistory = arrayOfNulls<Float>(MotionHostEvent.axes.size)
-
-    /**
-     * The last value of the HAT axes so it can be ignored in [onGenericMotionEvent] so they are handled by [dispatchKeyEvent] instead
-     */
-    private var oldHat = PointF()
-
-    /**
-     * This handles translating any [MotionHostEvent]s to a [GuestEvent] that is passed into libskyline
-     */
-    override fun onGenericMotionEvent(event : MotionEvent) : Boolean {
-        if ((event.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK) || event.isFromSource(InputDevice.SOURCE_CLASS_BUTTON)) && event.action == MotionEvent.ACTION_MOVE) {
-            val hat = PointF(event.getAxisValue(MotionEvent.AXIS_HAT_X), event.getAxisValue(MotionEvent.AXIS_HAT_Y))
-
-            if (hat == oldHat) {
-                for (axisItem in MotionHostEvent.axes.withIndex()) {
-                    val axis = axisItem.value
-                    var value = event.getAxisValue(axis)
-
-                    if ((event.historySize != 0 && value != event.getHistoricalAxisValue(axis, 0)) || (axesHistory[axisItem.index]?.let { it == value } == false)) {
-                        var polarity = value >= 0
-
-                        val guestEvent = MotionHostEvent(event.device.descriptor, axis, polarity).let { hostEvent ->
-                            inputManager.eventMap[hostEvent] ?: if (value == 0f) {
-                                polarity = false
-                                inputManager.eventMap[hostEvent.copy(polarity = false)]
-                            } else {
-                                null
-                            }
-                        }
-
-                        when (guestEvent) {
-                            is ButtonGuestEvent -> {
-                                if (guestEvent.button != ButtonId.Menu)
-                                    setButtonState(guestEvent.id, guestEvent.button.value(), if (abs(value) >= guestEvent.threshold) ButtonState.Pressed.state else ButtonState.Released.state)
-                            }
-
-                            is AxisGuestEvent -> {
-                                value = guestEvent.value(value)
-                                value = if (polarity) abs(value) else -abs(value)
-                                value = if (guestEvent.axis == AxisId.LX || guestEvent.axis == AxisId.RX) value else -value
-
-                                setAxisValue(guestEvent.id, guestEvent.axis.ordinal, (value * Short.MAX_VALUE).toInt())
-                            }
-                        }
-                    }
-
-                    axesHistory[axisItem.index] = value
-                }
-
-                return true
-            } else {
-                oldHat = hat
-            }
-        }
-
-        return super.onGenericMotionEvent(event)
+    override fun dispatchGenericMotionEvent(event : MotionEvent) : Boolean {
+        return if (inputHandler.handleMotionEvent(event)) true else super.dispatchGenericMotionEvent(event)
     }
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouch(view : View, event : MotionEvent) : Boolean {
-        val count = if (event.action != MotionEvent.ACTION_UP && event.action != MotionEvent.ACTION_CANCEL) event.pointerCount else 0
-        val points = IntArray(count * 5) // This is an array of skyline::input::TouchScreenPoint in C++ as that allows for efficient transfer of values to it
-        var offset = 0
-        for (index in 0 until count) {
-            val pointer = MotionEvent.PointerCoords()
-            event.getPointerCoords(index, pointer)
-
-            val x = 0f.coerceAtLeast(pointer.x * 1280 / view.width).toInt()
-            val y = 0f.coerceAtLeast(pointer.y * 720 / view.height).toInt()
-
-            points[offset++] = x
-            points[offset++] = y
-            points[offset++] = pointer.touchMinor.toInt()
-            points[offset++] = pointer.touchMajor.toInt()
-            points[offset++] = (pointer.orientation * 180 / Math.PI).toInt()
-        }
-
-        setTouchState(points)
-
-        return true
+        return inputHandler.handleTouchEvent(view, event)
     }
 
-    private fun onButtonStateChanged(buttonId : ButtonId, state : ButtonState) = setButtonState(0, buttonId.value(), state.state)
+    private fun onButtonStateChanged(buttonId : ButtonId, state : ButtonState) = InputHandler.setButtonState(0, buttonId.value(), state.state)
 
     private fun onStickStateChanged(stickId : StickId, position : PointF) {
-        setAxisValue(0, stickId.xAxis.ordinal, (position.x * Short.MAX_VALUE).toInt())
-        setAxisValue(0, stickId.yAxis.ordinal, (-position.y * Short.MAX_VALUE).toInt()) // Y is inverted, since drawing starts from top left
+        InputHandler.setAxisValue(0, stickId.xAxis.ordinal, (position.x * Short.MAX_VALUE).toInt())
+        InputHandler.setAxisValue(0, stickId.yAxis.ordinal, (-position.y * Short.MAX_VALUE).toInt()) // Y is inverted, since drawing starts from top left
     }
 
     @SuppressLint("WrongConstant")
@@ -514,13 +597,81 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         vibrators[index]?.cancel()
     }
 
+    @Suppress("unused")
+    fun showKeyboard(buffer : ByteBuffer, initialText : String) : SoftwareKeyboardDialog? {
+        buffer.order(ByteOrder.LITTLE_ENDIAN)
+        val config = ByteBufferSerializable.createFromByteBuffer(SoftwareKeyboardConfig::class, buffer) as SoftwareKeyboardConfig
+
+        val keyboardDialog = SoftwareKeyboardDialog.newInstance(config, initialText)
+        runOnUiThread {
+            val transaction = supportFragmentManager.beginTransaction()
+            transaction.setTransition(FragmentTransaction.TRANSIT_FRAGMENT_OPEN)
+            transaction
+                .add(android.R.id.content, keyboardDialog)
+                .addToBackStack(null)
+                .commit()
+        }
+        return keyboardDialog
+    }
+
+    @Suppress("unused")
+    fun waitForSubmitOrCancel(dialog : SoftwareKeyboardDialog) : Array<Any?> {
+        return dialog.waitForSubmitOrCancel().let { arrayOf(if (it.cancelled) 1 else 0, it.text) }
+    }
+
+    @Suppress("unused")
+    fun closeKeyboard(dialog : SoftwareKeyboardDialog) {
+        runOnUiThread { dialog.dismiss() }
+    }
+
+    @Suppress("unused")
+    fun showValidationResult(dialog : SoftwareKeyboardDialog, validationResult : Int, message : String) : Int {
+        val confirm = validationResult == SoftwareKeyboardDialog.validationConfirm
+        var accepted = false
+        val validatorResult = FutureTask { return@FutureTask accepted }
+        runOnUiThread {
+            val builder = MaterialAlertDialogBuilder(dialog.requireContext())
+            builder.setMessage(message)
+            builder.setPositiveButton(if (confirm) getString(android.R.string.ok) else getString(android.R.string.cancel)) { _, _ -> accepted = confirm }
+            if (confirm)
+                builder.setNegativeButton(getString(android.R.string.cancel)) { _, _ -> }
+            builder.setOnDismissListener { validatorResult.run() }
+            builder.show()
+        }
+        return if (validatorResult.get()) 0 else 1
+    }
+
     /**
      * @return A version code in Vulkan's format with 14-bit patch + 10-bit major and minor components
      */
     @ExperimentalUnsignedTypes
     @Suppress("unused")
     fun getVersionCode() : Int {
-        val (major, minor, patch) = BuildConfig.VERSION_NAME.split('.').map { it.toUInt() }
+        val (major, minor, patch) = BuildConfig.VERSION_NAME.split('-')[0].split('.').map { it.toUInt() }
         return ((major shl 22) or (minor shl 12) or (patch)).toInt()
     }
+
+    private val insetsOrMarginHandler = View.OnApplyWindowInsetsListener { view, insets ->
+        insets.displayCutout?.let {
+            val defaultHorizontalMargin = view.resources.getDimensionPixelSize(R.dimen.onScreenItemHorizontalMargin)
+            val left = if (it.safeInsetLeft == 0) defaultHorizontalMargin else it.safeInsetLeft
+            val right = if (it.safeInsetRight == 0) defaultHorizontalMargin else it.safeInsetRight
+
+            val params = view.layoutParams as ViewGroup.MarginLayoutParams
+            params.updateMargins(left = left, right = right)
+            view.layoutParams = params
+        }
+        insets
+    }
+
+    override fun onDisplayChanged(displayId : Int) {
+        @Suppress("DEPRECATION")
+        val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display!! else windowManager.defaultDisplay
+        if (display.displayId == displayId)
+            force60HzRefreshRate(!emulationSettings.maxRefreshRate)
+    }
+
+    override fun onDisplayAdded(displayId : Int) {}
+
+    override fun onDisplayRemoved(displayId : Int) {}
 }

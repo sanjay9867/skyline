@@ -14,7 +14,7 @@ namespace skyline::input {
         } { Activate(); /* NPads are activated by default, certain homebrew is reliant on this behavior */ }
 
     void NpadManager::Update() {
-        std::lock_guard guard(mutex);
+        std::scoped_lock guard{mutex};
 
         if (!activated)
             return;
@@ -23,7 +23,7 @@ namespace skyline::input {
             controller.device = nullptr;
 
         for (auto &id : supportedIds) {
-            if (id == NpadId::Unknown)
+            if (id == NpadId::Unknown || !IsNpadIdValid(id))
                 continue;
 
             auto &device{at(id)};
@@ -69,20 +69,13 @@ namespace skyline::input {
 
         // We do this to prevent triggering the event unless there's a real change in a device's style, which would be caused if we disconnected all controllers then reconnected them
         for (auto &device : npads) {
-            bool connected{};
-            for (const auto &controller : controllers) {
-                if (controller.device == &device) {
-                    connected = true;
-                    break;
-                }
-            }
-            if (!connected)
+            if (!ranges::any_of(controllers, [&](auto &controller) { return controller.device == &device; }))
                 device.Disconnect();
         }
     }
 
     void NpadManager::Activate() {
-        std::lock_guard guard(mutex);
+        std::scoped_lock guard{mutex};
         if (!activated) {
             supportedIds = {NpadId::Handheld, NpadId::Player1, NpadId::Player2, NpadId::Player3, NpadId::Player4, NpadId::Player5, NpadId::Player6, NpadId::Player7, NpadId::Player8};
             styles = {.proController = true, .joyconHandheld = true, .joyconDual = true, .joyconLeft = true, .joyconRight = true};
@@ -93,7 +86,7 @@ namespace skyline::input {
     }
 
     void NpadManager::Deactivate() {
-        std::lock_guard guard(mutex);
+        std::scoped_lock guard{mutex};
         if (activated) {
             supportedIds = {};
             styles = {};

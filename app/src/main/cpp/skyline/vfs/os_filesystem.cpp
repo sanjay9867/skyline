@@ -10,8 +10,8 @@
 
 namespace skyline::vfs {
     OsFileSystem::OsFileSystem(const std::string &basePath) : FileSystem(), basePath(basePath.ends_with('/') ? basePath : basePath + '/') {
-        if (!DirectoryExists(basePath))
-            if (!CreateDirectory(basePath, true))
+        if (!DirectoryExists(""))
+            if (!CreateDirectory("", true))
                 throw exception("Error creating the OS filesystem backing directory");
     }
 
@@ -19,7 +19,7 @@ namespace skyline::vfs {
         auto fullPath{basePath + path};
 
         // Create a directory that will hold the file
-        CreateDirectory(fullPath.substr(0, fullPath.find_last_of('/')), true);
+        CreateDirectory(path.substr(0, path.find_last_of('/')), true);
         int fd{open(fullPath.c_str(), O_RDWR | O_CREAT, S_IRUSR | S_IWUSR)};
         if (fd < 0) {
             if (errno != ENOENT)
@@ -38,15 +38,27 @@ namespace skyline::vfs {
         return true;
     }
 
+    void OsFileSystem::DeleteFileImpl(const std::string &path) {
+        auto fullPath{basePath + path};
+        remove(fullPath.c_str());
+    }
+
+    void OsFileSystem::DeleteDirectoryImpl(const std::string &path) {
+        auto fullPath{basePath + path};
+        std::filesystem::remove_all(fullPath.c_str());
+    }
+
     bool OsFileSystem::CreateDirectoryImpl(const std::string &path, bool parents) {
+        auto fullPath{basePath + path + "/"};
+
         if (!parents) {
-            int ret{mkdir(path.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH)};
+            int ret{mkdir(fullPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH)};
             return ret == 0 || errno == EEXIST;
         }
 
-        for (auto dir{basePath.begin()}; dir != basePath.end(); dir++) {
-            auto nextDir{std::find(dir, basePath.end(), '/')};
-            auto nextPath{"/" + std::string(basePath.begin(), nextDir)};
+        for (auto dir{fullPath.begin()}; dir != fullPath.end(); dir++) {
+            auto nextDir{std::find(dir, fullPath.end(), '/')};
+            auto nextPath{"/" + std::string(fullPath.begin(), nextDir)};
 
             int ret{mkdir(nextPath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH)};
             if (ret < 0 && errno != EEXIST && errno != EPERM)
@@ -82,7 +94,12 @@ namespace skyline::vfs {
     }
 
     std::shared_ptr<Directory> OsFileSystem::OpenDirectoryImpl(const std::string &path, Directory::ListMode listMode) {
-        return std::make_shared<OsFileSystemDirectory>(basePath + path, listMode);
+        struct dirent *entry;
+        auto directory{opendir((basePath + path).c_str())};
+        if (!directory)
+            return nullptr;
+        else
+            return std::make_shared<OsFileSystemDirectory>(basePath + path, listMode);
     }
 
     OsFileSystemDirectory::OsFileSystemDirectory(std::string path, Directory::ListMode listMode) : Directory(listMode), path(std::move(path)) {}
@@ -118,6 +135,7 @@ namespace skyline::vfs {
                 });
             }
         }
+        closedir(directory);
 
         return outputEntries;
     }

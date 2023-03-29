@@ -11,17 +11,17 @@ namespace skyline::service::codec {
         return util::AlignUp(static_cast<u32>(frameSize * channelCount / (OpusFullbandSampleRate / sampleRate)), 0x40);
     }
 
-    IHardwareOpusDecoder::IHardwareOpusDecoder(const DeviceState &state, ServiceManager &manager, i32 sampleRate, i32 channelCount, u32 workBufferSize, KHandle workBufferHandle)
+    IHardwareOpusDecoder::IHardwareOpusDecoder(const DeviceState &state, ServiceManager &manager, i32 sampleRate, i32 channelCount, u32 workBufferSize, KHandle workBufferHandle, bool isIsLargerSize)
         : BaseService(state, manager),
           sampleRate(sampleRate),
           channelCount(channelCount),
           workBuffer(state.process->GetHandle<kernel::type::KTransferMemory>(workBufferHandle)),
-          decoderOutputBufferSize(CalculateOutBufferSize(sampleRate, channelCount, MaxFrameSizeNormal)) {
+          decoderOutputBufferSize(CalculateOutBufferSize(sampleRate, channelCount, isIsLargerSize ? MaxFrameSizeEx : MaxFrameSizeNormal)) {
         if (workBufferSize < decoderOutputBufferSize)
             throw exception("Work Buffer doesn't have adequate space for Opus Decoder: 0x{:X} (Required: 0x{:X})", workBufferSize, decoderOutputBufferSize);
 
         // We utilize the guest-supplied work buffer for allocating the OpusDecoder object into
-        decoderState = reinterpret_cast<OpusDecoder *>(workBuffer->host.ptr);
+        decoderState = reinterpret_cast<OpusDecoder *>(workBuffer->host.data());
 
         if (int result = opus_decoder_init(decoderState, sampleRate, channelCount) != OPUS_OK)
             throw OpusException(result);

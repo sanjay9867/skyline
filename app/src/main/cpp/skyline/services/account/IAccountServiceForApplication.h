@@ -32,6 +32,8 @@ namespace skyline {
         */
         class IAccountServiceForApplication : public BaseService {
           private:
+            std::vector<account::UserId> openedUsers;
+
             /**
              * @brief Writes a vector of 128-bit user IDs to an output buffer
              */
@@ -40,51 +42,71 @@ namespace skyline {
           public:
             IAccountServiceForApplication(const DeviceState &state, ServiceManager &manager);
 
-            /**
-             * @brief Checks if the given user ID exists
-             */
+            Result GetUserCount(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
             Result GetUserExistence(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
-            /**
-             * @brief Returns a list of all user accounts on the console
-             */
             Result ListAllUsers(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
-            /**
-             * @brief Returns a list of all open user accounts on the console
-             */
             Result ListOpenUsers(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
-            /**
-             * @brief Returns the user ID of the last active user on the console
-             */
             Result GetLastOpenedUser(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
-            /**
-            * @brief Provides information about the running application for account services to use
-            * @url https://switchbrew.org/wiki/Account_services#InitializeApplicationInfoV0
-            */
-            Result InitializeApplicationInfoV0(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-            /**
-             * @brief Returns a handle to an IProfile which can be used for reading user information
-             */
             Result GetProfile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
             /**
-             * @brief Returns a handle to an IManagerForApplication which can be used for reading Nintendo Online info
+             * @url https://switchbrew.org/wiki/Account_services#IsUserRegistrationRequestPermitted
              */
+            Result IsUserRegistrationRequestPermitted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+            /**
+             * @url https://switchbrew.org/wiki/Account_services#TrySelectUserWithoutInteraction
+             */
+            Result TrySelectUserWithoutInteraction(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+            /**
+             * @url https://switchbrew.org/wiki/Account_services#InitializeApplicationInfoV0
+             */
+            Result InitializeApplicationInfoV0(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
             Result GetBaasAccountManagerForApplication(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
-            SERVICE_DECL(
-                SFUNC(0x1, IAccountServiceForApplication, GetUserExistence),
-                SFUNC(0x2, IAccountServiceForApplication, ListAllUsers),
-                SFUNC(0x3, IAccountServiceForApplication, ListOpenUsers),
-                SFUNC(0x4, IAccountServiceForApplication, GetLastOpenedUser),
-                SFUNC(0x5, IAccountServiceForApplication, GetProfile),
-                SFUNC(0x64, IAccountServiceForApplication, InitializeApplicationInfoV0),
-                SFUNC(0x65, IAccountServiceForApplication, GetBaasAccountManagerForApplication)
-            )
+            Result StoreSaveDataThumbnail(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+            Result LoadOpenContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+            Result ListOpenContextStoredUsers(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+            /**
+            * @url https://switchbrew.org/wiki/Account_services#InitializeApplicationInfo
+            */
+            Result InitializeApplicationInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+            Result ListQualifiedUsers(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+            Result IsUserAccountSwitchLocked(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+            Result InitializeApplicationInfoV2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+          SERVICE_DECL(
+              SFUNC(0x0, IAccountServiceForApplication, GetUserCount),
+              SFUNC(0x1, IAccountServiceForApplication, GetUserExistence),
+              SFUNC(0x2, IAccountServiceForApplication, ListAllUsers),
+              SFUNC(0x3, IAccountServiceForApplication, ListOpenUsers),
+              SFUNC(0x4, IAccountServiceForApplication, GetLastOpenedUser),
+              SFUNC(0x5, IAccountServiceForApplication, GetProfile),
+              SFUNC(0x32, IAccountServiceForApplication, IsUserRegistrationRequestPermitted),
+              SFUNC(0x33, IAccountServiceForApplication, TrySelectUserWithoutInteraction),
+              SFUNC(0x64, IAccountServiceForApplication, InitializeApplicationInfoV0),
+              SFUNC(0x65, IAccountServiceForApplication, GetBaasAccountManagerForApplication),
+              SFUNC(0x6E, IAccountServiceForApplication, StoreSaveDataThumbnail),
+              SFUNC(0x82, IAccountServiceForApplication, LoadOpenContext),
+              SFUNC(0x83, IAccountServiceForApplication, ListOpenContextStoredUsers),
+              SFUNC(0x8C, IAccountServiceForApplication, InitializeApplicationInfo),
+              SFUNC(0x8D, IAccountServiceForApplication, ListQualifiedUsers),
+              SFUNC(0x96, IAccountServiceForApplication, IsUserAccountSwitchLocked),
+              SFUNC(0xA0, IAccountServiceForApplication, InitializeApplicationInfoV2)
+          )
         };
     }
 

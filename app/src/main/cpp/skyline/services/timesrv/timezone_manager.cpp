@@ -16,7 +16,7 @@ namespace skyline::service::timesrv::core {
     }
 
     ResultValue<LocationName> TimeZoneManager::GetLocationName() {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock{mutex};
 
         if (!IsInitialized())
             return result::ClockUninitialized;
@@ -25,7 +25,7 @@ namespace skyline::service::timesrv::core {
     }
 
     Result TimeZoneManager::SetNewLocation(std::string_view pLocationName, span<u8> binary) {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock{mutex};
 
         rule = tz_tzalloc(binary.data(), static_cast<long>(binary.size()));
         if (!rule)
@@ -37,7 +37,7 @@ namespace skyline::service::timesrv::core {
     }
 
     ResultValue<SteadyClockTimePoint> TimeZoneManager::GetUpdateTime() {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock{mutex};
 
         if (!IsInitialized())
             return result::ClockUninitialized;
@@ -46,12 +46,12 @@ namespace skyline::service::timesrv::core {
     }
 
     void TimeZoneManager::SetUpdateTime(const SteadyClockTimePoint &pUpdateTime) {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock{mutex};
         updateTime = pUpdateTime;
     }
 
     ResultValue<int> TimeZoneManager::GetLocationCount() {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock{mutex};
 
         if (!IsInitialized())
             return result::ClockUninitialized;
@@ -60,12 +60,12 @@ namespace skyline::service::timesrv::core {
     }
 
     void TimeZoneManager::SetLocationCount(int pLocationCount) {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock{mutex};
         locationCount = pLocationCount;
     }
 
     ResultValue<std::array<u8, 0x10>> TimeZoneManager::GetBinaryVersion() {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock{mutex};
 
         if (!IsInitialized())
             return result::ClockUninitialized;
@@ -74,7 +74,7 @@ namespace skyline::service::timesrv::core {
     }
 
     void TimeZoneManager::SetBinaryVersion(std::array<u8, 0x10> pBinaryVersion) {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock{mutex};
         binaryVersion = pBinaryVersion;
     }
 
@@ -96,7 +96,7 @@ namespace skyline::service::timesrv::core {
 
         FullCalendarTime out{
             .calendarTime{
-                .year = static_cast<u16>(posixCalendarTime->tm_year),
+                .year = static_cast<u16>(posixCalendarTime->tm_year + 1900),
                 .month = static_cast<u8>(posixCalendarTime->tm_mon + 1),
                 .day = static_cast<u8>(posixCalendarTime->tm_mday),
                 .hour =  static_cast<u8>(posixCalendarTime->tm_hour),
@@ -118,7 +118,7 @@ namespace skyline::service::timesrv::core {
 
     ResultValue<PosixTime> TimeZoneManager::ToPosixTime(tz_timezone_t pRule, CalendarTime calendarTime) {
         struct tm posixCalendarTime{
-            .tm_year = calendarTime.year,
+            .tm_year = calendarTime.year - 1900,
             .tm_mon = calendarTime.month - 1,
             .tm_mday = calendarTime.day,
             .tm_min = calendarTime.minute,

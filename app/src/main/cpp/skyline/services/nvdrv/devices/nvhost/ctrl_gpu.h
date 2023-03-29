@@ -44,7 +44,7 @@ namespace skyline::service::nvdrv::device::nvhost {
             u32 computeClass{0xB1C0};                    // MAXWELL_COMPUTE_B
             u32 gpfifoClass{0xB06F};                     // MAXWELL_CHANNEL_GPFIFO_A
             u32 inlineToMemoryClass{0xA140};             // KEPLER_INLINE_TO_MEMORY_B
-            u32 dmaCopyClass{0xA140};                    // MAXWELL_DMA_COPY_A
+            u32 dmaCopyClass{0xB0B5};                    // MAXWELL_DMA_COPY_A
             u32 maxFbpsCount{0x1};                       // 0x1
             u32 fbpEnMask{};                             // Disabled
             u32 maxLtcPerFbp{0x2};
@@ -73,6 +73,8 @@ namespace skyline::service::nvdrv::device::nvhost {
             u32 subregionCount{0x10};
         };
 
+        using ZbcColorValue = std::array<u32, 4>;
+
         CtrlGpu(const DeviceState &state, Driver &driver, Core &core, const SessionContext &ctx);
 
         /**
@@ -86,6 +88,12 @@ namespace skyline::service::nvdrv::device::nvhost {
          * @url https://switchbrew.org/wiki/NV_services#NVGPU_GPU_IOCTL_ZCULL_GET_INFO
          */
         PosixResult ZCullGetInfo(Out<ZCullInfo> info);
+
+        /**
+         * @brief Sets the zero bandwidth clear parameters
+         * @url https://switchbrew.org/wiki/NV_services#NVGPU_GPU_IOCTL_ZBC_SET_TABLE
+         */
+        PosixResult ZbcSetTable(In<ZbcColorValue> colorDs, In<ZbcColorValue> colorL2, In<u32> depth, In<u32> format, In<u32> type);
 
         /**
          * @brief Returns a struct with certain GPU characteristics
@@ -114,6 +122,11 @@ namespace skyline::service::nvdrv::device::nvhost {
          * @url https://switchbrew.org/wiki/NV_services#NVGPU_GPU_IOCTL_ZBC_GET_ACTIVE_SLOT_MASK
          */
         PosixResult GetActiveSlotMask(Out<u32> slot, Out<u32> mask);
+
+        /**
+         * @url https://switchbrew.org/wiki/NV_services#NVGPU_GPU_IOCTL_GET_GPU_TIME
+         */
+        PosixResult GetGpuTime(Out<u64> time);
 
         std::shared_ptr<type::KEvent> QueryEvent(u32 eventId) override;
 

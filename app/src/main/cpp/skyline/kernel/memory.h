@@ -3,10 +3,15 @@
 
 #pragma once
 
-#include <common.h>
 #include <sys/mman.h>
+#include <common.h>
+#include <common/file_descriptor.h>
 
 namespace skyline {
+    namespace kernel::type {
+        class KMemory;
+    }
+
     namespace memory {
         union Permission {
             /**
@@ -179,15 +184,6 @@ namespace skyline {
             constexpr MemoryState CodeWritable{0x00402015};
         }
 
-        struct Region {
-            u64 address;
-            size_t size;
-
-            bool IsInside(void *ptr) {
-                return (address <= reinterpret_cast<u64>(ptr)) && ((address + size) > reinterpret_cast<u64>(ptr));
-            }
-        };
-
         enum class AddressSpaceType : u8 {
             AddressSpace32Bit = 0, //!< 32-bit address space used by 32-bit applications
             AddressSpace36Bit = 1, //!< 36-bit address space used by 64-bit applications before 2.0.0
@@ -203,14 +199,15 @@ namespace skyline {
             memory::Permission permission;
             memory::MemoryState state;
             memory::MemoryAttribute attributes;
+            kernel::type::KMemory *memory{};
 
             constexpr bool IsCompatible(const ChunkDescriptor &chunk) const {
-                return chunk.permission == permission && chunk.state.value == state.value && chunk.attributes.value == attributes.value;
+                return chunk.permission == permission && chunk.state.value == state.value && chunk.attributes.value == attributes.value && chunk.memory == memory;
             }
         };
 
         /**
-         * @brief MemoryManager keeps track of guest virtual memory and its related attributes
+         * @brief MemoryManager allocates and keeps track of guest virtual memory and its related attributes
          */
         class MemoryManager {
           private:
@@ -218,13 +215,15 @@ namespace skyline {
             std::vector<ChunkDescriptor> chunks;
 
           public:
-            memory::Region addressSpace{}; //!< The entire address space
-            memory::Region base{}; //!< The application-accessible address space
-            memory::Region code{};
-            memory::Region alias{};
-            memory::Region heap{};
-            memory::Region stack{};
-            memory::Region tlsIo{}; //!< TLS/IO
+            memory::AddressSpaceType addressSpaceType{};
+            span<u8> addressSpace{}; //!< The entire address space
+            span<u8> codeBase36Bit{}; //!< A mapping in the lower 36 bits of the address space for mapping code and stack on 36-bit guests
+            span<u8> base{}; //!< The application-accessible address space (for 39-bit guests) or the heap/alias address space (for 36-bit guests)
+            span<u8> code{};
+            span<u8> alias{};
+            span<u8> heap{};
+            span<u8> stack{};
+            span<u8> tlsIo{}; //!< TLS/IO
 
             std::shared_mutex mutex; //!< Synchronizes any operations done on the VMM, it's locked in shared mode by readers and exclusive mode by writers
 
@@ -237,7 +236,29 @@ namespace skyline {
              */
             void InitializeVmm(memory::AddressSpaceType type);
 
-            void InitializeRegions(u8 *codeStart, u64 size);
+            void InitializeRegions(span<u8> codeRegion);
+
+            /**
+             * @brief Mirrors a page-aligned mapping in the guest address space to the host address space
+             * @return A span to the host address space mirror mapped as RWX, unmapping it is the responsibility of the caller
+             * @note The supplied mapping **must** be page-aligned and inside the guest address space
+             */
+            span<u8> CreateMirror(span<u8> mapping);
+
+            /**
+             * @brief Mirrors multiple page-aligned mapping in the guest address space to the host address space
+             * @param totalSize The total size of all the regions to be mirrored combined
+             * @return A span to the host address space mirror mapped as RWX, unmapping it is the responsibility of the caller
+             * @note The supplied mapping **must** be page-aligned and inside the guest address space
+             * @note If a single mapping is mirrored, it is recommended to use CreateMirror instead
+             */
+            span<u8> CreateMirrors(const std::vector<span<u8>> &regions);
+
+            /**
+             * @brief Frees the underlying physical memory for all full pages in the contained mapping
+             * @note All subsequent accesses to freed memory will return 0s
+             */
+            void FreeMemory(span<u8> memory);
 
             void InsertChunk(const ChunkDescriptor &chunk);
 
@@ -253,6 +274,16 @@ namespace skyline {
              * @note There is a ceiling of SystemResourceSize as specified in the NPDM, this value will be clipped to that
              */
             size_t GetSystemResourceUsage();
+
+            /**
+             * @return If the supplied region is contained withing the accessible guest address space
+             */
+            bool AddressSpaceContains(span<u8> region) const {
+                if (addressSpaceType == memory::AddressSpaceType::AddressSpace36Bit)
+                    return codeBase36Bit.contains(region) || base.contains(region);
+                else
+                    return base.contains(region);
+            }
         };
     }
 }

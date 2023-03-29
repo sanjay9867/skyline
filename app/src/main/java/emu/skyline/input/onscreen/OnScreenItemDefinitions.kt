@@ -7,13 +7,15 @@ package emu.skyline.input.onscreen
 
 import android.graphics.Canvas
 import android.graphics.PointF
+import android.graphics.Typeface
 import android.os.SystemClock
 import androidx.core.graphics.minus
 import emu.skyline.R
 import emu.skyline.input.ButtonId
 import emu.skyline.input.ButtonId.*
 import emu.skyline.input.StickId
-import emu.skyline.input.StickId.*
+import emu.skyline.input.StickId.Left
+import emu.skyline.input.StickId.Right
 import emu.skyline.utils.add
 import emu.skyline.utils.multiply
 import kotlin.math.roundToInt
@@ -40,14 +42,6 @@ open class CircularButton(
      * Checks if [x] and [y] are within circle
      */
     override fun isTouched(x : Float, y : Float) : Boolean = (PointF(currentX, currentY) - (PointF(x, y))).length() <= radius
-
-    override fun onFingerDown(x : Float, y : Float) {
-        drawable.alpha = 125
-    }
-
-    override fun onFingerUp(x : Float, y : Float) {
-        drawable.alpha = 255
-    }
 }
 
 class JoystickButton(
@@ -73,7 +67,7 @@ class JoystickButton(
     var shortDoubleTapped = false
         private set
 
-    override fun renderCenteredText(canvas : Canvas, text : String, size : Float, x : Float, y : Float) = Unit
+    override fun renderCenteredText(canvas : Canvas, text : String, size : Float, x : Float, y : Float, alpha : Int) = Unit
 
     override fun render(canvas : Canvas) {
         super.render(canvas)
@@ -101,7 +95,7 @@ class JoystickButton(
         if (firstTapDiff in 0..500 && secondTapDiff in 0..500) {
             shortDoubleTapped = true
             // Indicate stick being pressed with lower alpha value
-            drawable.alpha = 50
+            isPressed = true
         }
         fingerDownTime = currentTime
     }
@@ -113,7 +107,7 @@ class JoystickButton(
 
         fingerUpTime = SystemClock.elapsedRealtime()
         shortDoubleTapped = false
-        drawable.alpha = 255
+        isPressed = false
     }
 
     fun onFingerMoved(x : Float, y : Float, manualMove : Boolean = true) : PointF {
@@ -174,14 +168,6 @@ open class RectangularButton(
     drawableId
 ) {
     override fun isTouched(x : Float, y : Float) = currentBounds.contains(x.roundToInt(), y.roundToInt())
-
-    override fun onFingerDown(x : Float, y : Float) {
-        drawable.alpha = 125
-    }
-
-    override fun onFingerUp(x : Float, y : Float) {
-        drawable.alpha = 255
-    }
 }
 
 class TriggerButton(
@@ -209,14 +195,14 @@ class TriggerButton(
 
 class Controls(onScreenControllerView : OnScreenControllerView) {
     private val buttonA = CircularButton(onScreenControllerView, A, 0.95f, 0.65f, 0.025f)
-    private val buttonB = CircularButton(onScreenControllerView, B, 0.9f, 0.75f, 0.025f)
-    private val buttonX = CircularButton(onScreenControllerView, X, 0.9f, 0.55f, 0.025f)
+    private val buttonB = CircularButton(onScreenControllerView, B, 0.9f, 0.765f, 0.025f)
+    private val buttonX = CircularButton(onScreenControllerView, X, 0.9f, 0.535f, 0.025f)
     private val buttonY = CircularButton(onScreenControllerView, Y, 0.85f, 0.65f, 0.025f)
 
     private val buttonDpadLeft = CircularButton(onScreenControllerView, DpadLeft, 0.2f, 0.65f, 0.025f)
-    private val buttonDpadUp = CircularButton(onScreenControllerView, DpadUp, 0.25f, 0.55f, 0.025f)
+    private val buttonDpadUp = CircularButton(onScreenControllerView, DpadUp, 0.25f, 0.535f, 0.025f)
     private val buttonDpadRight = CircularButton(onScreenControllerView, DpadRight, 0.3f, 0.65f, 0.025f)
-    private val buttonDpadDown = CircularButton(onScreenControllerView, DpadDown, 0.25f, 0.75f, 0.025f)
+    private val buttonDpadDown = CircularButton(onScreenControllerView, DpadDown, 0.25f, 0.765f, 0.025f)
 
     private val buttonL = RectangularButton(onScreenControllerView, L, 0.1f, 0.25f, 0.09f, 0.1f)
     private val buttonR = RectangularButton(onScreenControllerView, R, 0.9f, 0.25f, 0.09f, 0.1f)
@@ -248,11 +234,32 @@ class Controls(onScreenControllerView : OnScreenControllerView) {
     val allButtons = circularButtons + joysticks + rectangularButtons + triggerButtons
 
     /**
-     * We can take any of the global scale variables from the buttons
+     * We can take any of the global scale variables from the buttons since the value is shared across all buttons
      */
     var globalScale
         get() = circularButtons.first().config.globalScale
         set(value) {
             circularButtons.first().config.globalScale = value
         }
+
+    /**
+     * We can take any of the alpha variables from the buttons since the value is shared across all buttons
+     */
+    var alpha
+        get() = circularButtons.first().config.alpha
+        set(value) {
+            circularButtons.first().config.alpha = value
+        }
+
+    /**
+     * We can take any of the global text color variables from the buttons
+     */
+    val globalTextColor
+        get() = circularButtons.first().config.textColor
+
+    /**
+     * We can take any of the global background color variables from the buttons
+     */
+    val globalBackgroundColor
+        get() = circularButtons.first().config.backgroundColor
 }

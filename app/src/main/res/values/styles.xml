@@ -1,21 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <style name="RoundedAppImage">
+    <!-- Workaround for AndroidX PreferenceScreen since it doesn't use MaterialAlertDialogs -->
+    <style name="ThemeOverlay.App.MaterialAlertDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="dialogCornerRadius">28dp</item>
         <item name="cornerFamily">rounded</item>
-        <item name="cornerSize">6dp</item>
+        <item name="android:colorBackground">?attr/colorSurface</item>
     </style>
 
-    <style name="ChipChoice.Material">
-        <item name="colorPrimary">@color/colorPrimary</item>
-        <item name="colorOnPrimary">@color/colorPrimary</item>
-    </style>
-
-    <style name="ChipChoice" parent="Widget.MaterialComponents.Chip.Choice">
+    <!-- Override of the MD3 Chip style to make text all caps -->
+    <style name="ChipChoice" parent="Widget.Material3.Chip.Filter.Elevated">
         <item name="android:textAllCaps">true</item>
-        <item name="chipStartPadding">8dp</item>
-        <item name="chipEndPadding">8dp</item>
-        <item name="materialThemeOverlay">@style/ChipChoice.Material</item>
-        <item name="shapeAppearance">@style/ShapeAppearance.MaterialComponents.LargeComponent</item>
+    </style>
+
+    <!-- Override the default switch preference style to use the MD3 switch -->
+    <style name="App.Preference.SwitchPreferenceCompat.Material3" parent="Preference.SwitchPreferenceCompat.Material">
+        <item name="android:widgetLayout">@layout/preference_widget_material_switch</item>
+    </style>
+
+    <!-- Override the default divider used in PreferenceScreen -->
+    <style name="App.PreferenceFragment.Material" parent="PreferenceFragment.Material">
+        <item name="android:divider">@drawable/preference_list_divider_m3</item>
     </style>
 </resources>

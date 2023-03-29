@@ -4,10 +4,25 @@
 #pragma once
 
 #include <common/circular_queue.h>
+#include <soc/gm20b/macro/macro_state.h>
 #include "engines/gpfifo.h"
 
 namespace skyline::soc::gm20b {
     struct ChannelContext;
+
+    /**
+     * @brief Mapping of subchannel names to their corresponding subchannel IDs
+     */
+    enum class SubchannelId : u8 {
+        ThreeD = 0,
+        Compute = 1,
+        Inline2Mem = 2,
+        TwoD = 3,
+        Copy = 4,
+        Software0 = 5,
+        Software1 = 6,
+        Software2 = 7,
+    };
 
     /**
      * @brief A GPFIFO entry as submitted through 'SubmitGpfifo'
@@ -92,8 +107,8 @@ namespace skyline::soc::gm20b {
         ChannelContext &channelCtx;
         engine::GPFIFO gpfifoEngine; //!< The engine for processing GPFIFO method calls
         CircularQueue<GpEntry> gpEntries;
-        std::thread thread; //!< The thread that manages processing of pushbuffers
         std::vector<u32> pushBufferData; //!< Persistent vector storing pushbuffer data to avoid constant reallocations
+        bool skipDirtyFlushes{}; //!< If GPU flushing should be skipped when fetching pushbuffer contents
 
         /**
          * @brief Holds the required state in order to resume a method started from one call to `Process` in another
@@ -102,7 +117,7 @@ namespace skyline::soc::gm20b {
         struct MethodResumeState {
             u32 remaining; //!< The number of entries left to handle until the method is finished
             u32 address; //!< The method address in the GPU block specified by `subchannel` that is the target of the command
-            u8 subChannel;
+            SubchannelId subChannel;
 
             /**
              * @brief This is a simplified version of the full method type enum
@@ -114,12 +129,22 @@ namespace skyline::soc::gm20b {
             } state; //!< The type of method to resume
         } resumeState{};
 
+        std::thread thread; //!< The thread that manages processing of pushbuffers
 
         /**
-         * @brief Sends a method call to the GPU hardware
+         * @brief Sends a method call to the appropriate subchannel and handles macro and GPFIFO methods
          */
-        void Send(u32 method, u32 argument, u32 subchannel, bool lastCall);
+        void SendFull(u32 method, GpfifoArgument argument, SubchannelId subchannel, bool lastCall);
 
+        /**
+         * @brief Sends a method call to the appropriate subchannel, macro and GPFIFO methods are not handled
+         */
+        void SendPure(u32 method, u32 argument, SubchannelId subchannel);
+
+        /**
+         * @brief Sends a batch of method calls all directed at the same method to the appropriate subchannel, macro and GPFIFO methods are not handled
+         */
+        void SendPureBatchNonInc(u32 method, span<u32> arguments, SubchannelId subChannel);
 
         /**
          * @brief Processes the pushbuffer contained within the given GpEntry, calling methods as needed

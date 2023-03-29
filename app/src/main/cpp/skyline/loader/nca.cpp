@@ -36,12 +36,12 @@ namespace skyline::loader {
             else
                 continue;
 
-            loadInfo = NsoLoader::LoadNso(loader, nsoFile, process, state, offset, nso + std::string(".nso"));
+            loadInfo = NsoLoader::LoadNso(loader, nsoFile, process, state, offset, nso + std::string(".nso"), true);
             Logger::Info("Loaded '{}.nso' at 0x{:X} (.text @ 0x{:X})", nso, base + offset, loadInfo.entry);
             offset += loadInfo.size;
         }
 
-        state.process->memory.InitializeRegions(base, offset);
+        state.process->memory.InitializeRegions(span<u8>{base, offset});
 
         return entry;
     }
