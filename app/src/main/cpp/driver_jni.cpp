@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: MPL-2.0
-// Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
-
 #include <jni.h>
 #include <dlfcn.h>
 #include <fcntl.h>
